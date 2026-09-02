@@ -705,8 +705,13 @@ public final class AetherEngine: ObservableObject {
     /// AE#446 round 4: bounded audit after a rejoin swap. See `auditLiveRejoinPlacement`.
     var liveRejoinAuditUntil: Date?
     var liveRejoinAuditLastEmit: Date?
+    /// One-shot host request to keep the current native item attached until the next load can
+    /// replace it atomically. This covers foreground playlist/episode changes that need the same
+    /// nil-item-gap protection as PiP without pretending that Picture in Picture is active.
+    private var nextLoadRequestsInPlaceItemHandover = false
     /// AE#158: set by load() when the running item must survive until the new master attaches (PiP
-    /// next-episode handover); consumed and reset by the loopback host.load callsite (inPlaceSwap).
+    /// or host-requested handover); consumed and reset by the loopback host.load callsite
+    /// (inPlaceSwap).
     var pendingInPlaceItemHandover = false
     /// SW-PiP bridge, the software-path analog of `currentAVPlayer`: set when a SW session has its
     /// display layer, nil on teardown. Hosts build their sample-buffer PiP ContentSource from it.
@@ -776,11 +781,29 @@ public final class AetherEngine: ObservableObject {
         enabled && pipActive
     }
 
-    /// AE#158: a system PiP window closes the moment its source layer's player drops its item (the #93
-    /// in-PiP recovery reload hit the same nil-item gap), so a native->native load while PiP is active
-    /// keeps the old item attached through the load gap and swaps in place once the new master is ready.
-    nonisolated static func shouldHandOverItemInPlace(pipActive: Bool, priorBackendWasNative: Bool) -> Bool {
-        pipActive && priorBackendWasNative
+    /// AE#158: a native AVPlayer can lose its visible picture when a replacement load temporarily
+    /// drops its item. PiP always requires an in-place handover; a foreground host can explicitly
+    /// request the same behavior for a playlist or episode transition. Neither applies unless the
+    /// outgoing backend is native.
+    nonisolated static func shouldHandOverItemInPlace(
+        pipActive: Bool,
+        hostRequested: Bool,
+        priorBackendWasNative: Bool
+    ) -> Bool {
+        priorBackendWasNative && (pipActive || hostRequested)
+    }
+
+    /// Consume the one-shot foreground request while folding it with PiP's mandatory handover.
+    /// Keeping the consume at the decision boundary prevents one episode transition from changing
+    /// the teardown behavior of a later, unrelated load.
+    func consumeInPlaceItemHandoverRequest(priorBackendWasNative: Bool) -> Bool {
+        let hostRequested = nextLoadRequestsInPlaceItemHandover
+        nextLoadRequestsInPlaceItemHandover = false
+        return Self.shouldHandOverItemInPlace(
+            pipActive: pictureInPictureActive,
+            hostRequested: hostRequested,
+            priorBackendWasNative: priorBackendWasNative
+        )
     }
 
     /// SW-PiP: playable range for the sample-buffer PiP UI on the PTS axis of the enqueued frames
@@ -3020,10 +3043,12 @@ public final class AetherEngine: ObservableObject {
         // registration survives the seam (issue #15). Captured before stopInternal resets playbackBackend;
         // the SW dispatch branch releases it if this source routes software.
         let priorBackendWasNative = (playbackBackend == .native)
-        // AE#158: while a PiP window is live, the running item must survive this load's teardown or the
-        // system closes the window; the loopback host.load callsite finishes the handover (inPlaceSwap).
-        let handOverInPlace = Self.shouldHandOverItemInPlace(pipActive: pictureInPictureActive,
-                                                             priorBackendWasNative: priorBackendWasNative)
+        // AE#158: PiP and an explicit foreground replacement request both need the running item to
+        // survive this load's teardown. Consume the host request here so it can affect only one load;
+        // the loopback host.load callsite finishes the handover (inPlaceSwap).
+        let handOverInPlace = consumeInPlaceItemHandoverRequest(
+            priorBackendWasNative: priorBackendWasNative
+        )
         pendingInPlaceItemHandover = handOverInPlace
         // #128 follow-up: preserve the previous session's display criteria across the load seam. Nil-ing it
         // here bounces the panel through SDR before apply() re-negotiates the same mode on video->video
@@ -4837,6 +4862,16 @@ public final class AetherEngine: ObservableObject {
         await seek(to: seconds)
     }
 
+    /// Keep the current native AVPlayer item attached until the next `load` replaces it.
+    ///
+    /// Call this immediately before a foreground playlist or episode replacement when a nil-item
+    /// gap would blank the existing player layer. The request is consumed by the next `load` and
+    /// has no effect when the outgoing session is not using the native backend. It does not pause,
+    /// stop, or otherwise change transport state.
+    public func prepareForItemReplacement() {
+        nextLoadRequestsInPlaceItemHandover = true
+    }
+
     /// Stop playback and tear the session down.
     ///
     /// - Parameter resetDisplayCriteria: `true` (default) returns the panel to its default HDMI mode
@@ -4852,6 +4887,7 @@ public final class AetherEngine: ObservableObject {
     ///   pair (`resetDisplayCriteria: false`) and *is* genuinely leaving playback can pass
     ///   `finalTeardown: true`. Only a final teardown honours `deactivatesAudioSessionOnStop`.
     public func stop(resetDisplayCriteria: Bool = true, finalTeardown: Bool? = nil) {
+        nextLoadRequestsInPlaceItemHandover = false
         stopInternal(resetDisplayCriteria: resetDisplayCriteria,
                      finalTeardown: finalTeardown ?? resetDisplayCriteria)
         state = .idle

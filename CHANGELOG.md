@@ -10,7 +10,13 @@ the public-API contract.
 
 ## [Unreleased]
 
-_Nothing yet._
+### Fixed
+
+- **Foreground native-to-native replacements can keep the outgoing item attached until the new
+  item is ready to swap in.** `prepareForItemReplacement()` gives a host the same nil-item-gap
+  protection that Aether already applies to active Picture in Picture without making the host
+  pretend PiP is active. The request is consumed by exactly one `load()`, is ignored after a
+  non-native session, and is cancelled by `stop()`, so it cannot alter an unrelated later load.
 
 ## [6.64.0] - 2026-09-02
 
