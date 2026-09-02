@@ -1,16 +1,27 @@
 import Testing
 @testable import AetherEngine
 
-/// AE#158: a system PiP window closes the moment its source layer's player drops its item, so a
-/// native->native load while PiP is active keeps the running item attached until the new master
-/// swaps in place. See AetherEngine.shouldHandOverItemInPlace.
-@Suite("PiP in-place item handover policy")
+/// AE#158: a native player can lose its visible presentation when its source layer's player drops
+/// its item, so PiP and explicit foreground replacements keep the running item attached until the
+/// new master swaps in place. See AetherEngine.shouldHandOverItemInPlace.
+@Suite("Native in-place item handover policy")
 struct PiPItemHandoverTests {
-    @Test("hands over in place only while PiP is active on a native session")
-    func handsOverOnlyForNativePiP() {
-        #expect(AetherEngine.shouldHandOverItemInPlace(pipActive: true, priorBackendWasNative: true) == true)
-        #expect(AetherEngine.shouldHandOverItemInPlace(pipActive: false, priorBackendWasNative: true) == false)
-        #expect(AetherEngine.shouldHandOverItemInPlace(pipActive: true, priorBackendWasNative: false) == false)
-        #expect(AetherEngine.shouldHandOverItemInPlace(pipActive: false, priorBackendWasNative: false) == false)
+    @Test("hands over for PiP or an explicit host request only from a native session")
+    func handsOverForNativePiPOrHostRequest() {
+        #expect(AetherEngine.shouldHandOverItemInPlace(
+            pipActive: true, hostRequested: false, priorBackendWasNative: true
+        ))
+        #expect(AetherEngine.shouldHandOverItemInPlace(
+            pipActive: false, hostRequested: true, priorBackendWasNative: true
+        ))
+        #expect(AetherEngine.shouldHandOverItemInPlace(
+            pipActive: true, hostRequested: true, priorBackendWasNative: true
+        ))
+        #expect(!AetherEngine.shouldHandOverItemInPlace(
+            pipActive: false, hostRequested: false, priorBackendWasNative: true
+        ))
+        #expect(!AetherEngine.shouldHandOverItemInPlace(
+            pipActive: true, hostRequested: true, priorBackendWasNative: false
+        ))
     }
 }
