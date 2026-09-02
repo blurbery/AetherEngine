@@ -24,4 +24,50 @@ struct PiPItemHandoverTests {
             pipActive: true, hostRequested: true, priorBackendWasNative: false
         ))
     }
+
+    @Test("a foreground request is consumed exactly once")
+    @MainActor
+    func foregroundRequestIsOneShot() throws {
+        let engine = try AetherEngine()
+
+        engine.prepareForItemReplacement()
+
+        #expect(engine.consumeInPlaceItemHandoverRequest(priorBackendWasNative: true))
+        #expect(!engine.consumeInPlaceItemHandoverRequest(priorBackendWasNative: true))
+        engine.stop()
+    }
+
+    @Test("a non-native load consumes rather than leaks the foreground request")
+    @MainActor
+    func nonNativeLoadConsumesRequest() throws {
+        let engine = try AetherEngine()
+
+        engine.prepareForItemReplacement()
+
+        #expect(!engine.consumeInPlaceItemHandoverRequest(priorBackendWasNative: false))
+        #expect(!engine.consumeInPlaceItemHandoverRequest(priorBackendWasNative: true))
+        engine.stop()
+    }
+
+    @Test("a final stop cancels a pending foreground request")
+    @MainActor
+    func stopCancelsPendingRequest() throws {
+        let engine = try AetherEngine()
+
+        engine.prepareForItemReplacement()
+        engine.stop()
+
+        #expect(!engine.consumeInPlaceItemHandoverRequest(priorBackendWasNative: true))
+    }
+
+    @Test("PiP remains mandatory without a foreground request")
+    @MainActor
+    func pipHandoverRemainsIndependent() throws {
+        let engine = try AetherEngine()
+        engine.pictureInPictureActive = true
+
+        #expect(engine.consumeInPlaceItemHandoverRequest(priorBackendWasNative: true))
+        #expect(engine.consumeInPlaceItemHandoverRequest(priorBackendWasNative: true))
+        engine.stop()
+    }
 }

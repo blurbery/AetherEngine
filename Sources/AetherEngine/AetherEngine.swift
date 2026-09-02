@@ -708,6 +708,19 @@ public final class AetherEngine: ObservableObject {
         priorBackendWasNative && (pipActive || hostRequested)
     }
 
+    /// Consume the one-shot foreground request while folding it with PiP's mandatory handover.
+    /// Keeping the consume at the decision boundary prevents one episode transition from changing
+    /// the teardown behavior of a later, unrelated load.
+    func consumeInPlaceItemHandoverRequest(priorBackendWasNative: Bool) -> Bool {
+        let hostRequested = nextLoadRequestsInPlaceItemHandover
+        nextLoadRequestsInPlaceItemHandover = false
+        return Self.shouldHandOverItemInPlace(
+            pipActive: pictureInPictureActive,
+            hostRequested: hostRequested,
+            priorBackendWasNative: priorBackendWasNative
+        )
+    }
+
     /// SW-PiP: playable range for the sample-buffer PiP UI on the PTS axis of the enqueued frames
     /// (the source axis; sourceTime = currentTime + container start offset). Live or unknown
     /// duration reports indefinite so the window shows live UI instead of a bogus scrubber.
@@ -2699,11 +2712,9 @@ public final class AetherEngine: ObservableObject {
         // AE#158: PiP and an explicit foreground replacement request both need the running item to
         // survive this load's teardown. Consume the host request here so it can affect only one load;
         // the loopback host.load callsite finishes the handover (inPlaceSwap).
-        let hostRequestedHandover = nextLoadRequestsInPlaceItemHandover
-        nextLoadRequestsInPlaceItemHandover = false
-        let handOverInPlace = Self.shouldHandOverItemInPlace(pipActive: pictureInPictureActive,
-                                                             hostRequested: hostRequestedHandover,
-                                                             priorBackendWasNative: priorBackendWasNative)
+        let handOverInPlace = consumeInPlaceItemHandoverRequest(
+            priorBackendWasNative: priorBackendWasNative
+        )
         pendingInPlaceItemHandover = handOverInPlace
         // #128 follow-up: preserve the previous session's display criteria across the load seam. Nil-ing it
         // here bounces the panel through SDR before apply() re-negotiates the same mode on video->video
