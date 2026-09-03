@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       verify_handover_baseline:
-        description: Verify the two handover regressions fail against the prior Silo engine pin
+        description: Verify the handover regressions fail against the prior Silo engine pin
         type: boolean
         default: false
 
@@ -59,17 +59,20 @@ jobs:
           git fetch --depth 1 origin "$baseline"
           git restore --source="$baseline" -- \
             Sources/AetherEngine/AetherEngine.swift \
+            Sources/AetherEngine/AetherEngine+Loading.swift \
             Sources/AetherEngine/Native/NativeAVPlayerHost.swift
           set +e
-          swift test --filter 'PiPItemHandoverTests/(handoverRetiresSessionBeforeResubscription|queuedEndCannotEscapeHandover)' 2>&1 | tee baseline.log
+          swift test --filter 'PiPItemHandoverTests/(handoverRetiresSessionBeforeResubscription|queuedEndCannotEscapeHandover|nativeURLBypassHonorsHandover)' 2>&1 | tee baseline.log
           result=${PIPESTATUS[0]}
           set -e
           git restore --source=HEAD -- \
             Sources/AetherEngine/AetherEngine.swift \
+            Sources/AetherEngine/AetherEngine+Loading.swift \
             Sources/AetherEngine/Native/NativeAVPlayerHost.swift
           test "$result" -ne 0
           grep -E 'Test .*handover retires replayed EOF.*failed' baseline.log
           grep -E 'Test .*queued outgoing end notification.*failed' baseline.log
+          grep -E 'Test .*native URL bypass replaces the successor.*failed' baseline.log
 
   build-tvos:
     name: xcodebuild (tvOS Simulator)

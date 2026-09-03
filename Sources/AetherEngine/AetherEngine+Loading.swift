@@ -408,7 +408,10 @@ extension AetherEngine {
         // generic live HLS origins (IPTV / Stremio add-on channels) enforce per-stream Referer /
         // User-Agent / Authorization headers, so LoadOptions.httpHeaders rides into the AVURLAsset (#119).
         // forwardBufferDuration: 0 = system-adaptive; the 4 s VOD floor caused a 3-4 s black screen on live startup.
-        if loadGeneration == bypassGeneration { recordStartupCheckpoint(.sessionConstructed) }   // #361
+        try checkLoadCurrent(bypassGeneration)
+        let inPlaceHandover = pendingInPlaceItemHandover
+        pendingInPlaceItemHandover = false
+        recordStartupCheckpoint(.sessionConstructed)   // #361
         host.load(url: playbackURL,
                   startPosition: startPosition,
                   perFrameHDR: true,
@@ -418,6 +421,7 @@ extension AetherEngine {
                   // This lean path has no live-reopen / readiness watchdog; let AVPlayer's "gave up"
                   // signal surface a dead upstream (segment 404 / token expiry) so the host can retune.
                   surfaceEndFailures: true,
+                  inPlaceSwap: inPlaceHandover,
                   httpHeaders: options.httpHeaders,
                   // #168 follow-up: live-only (VOD remote HLS is the AE#154 reroute target; ingesting it
                   // back would ping-pong), and hosts can opt out via LoadOptions.

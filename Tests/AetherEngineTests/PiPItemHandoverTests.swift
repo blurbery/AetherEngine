@@ -9,6 +9,34 @@ import os
 /// new master swaps in place. See AetherEngine.shouldHandOverItemInPlace.
 @Suite("Native in-place item handover policy")
 struct PiPItemHandoverTests {
+    @Test("native URL bypass replaces the successor once without a nil item")
+    @MainActor
+    func nativeURLBypassHonorsHandover() async throws {
+        let engine = try AetherEngine()
+        defer { engine.stop() }
+        var options = LoadOptions()
+        options.nativeRemoteHLS = true
+        // Item lifecycle only: no server or decoder is needed for this test.
+        let url = URL(fileURLWithPath: "/aether-handover-test/fixture.mp4")
+        try await engine.load(url: url, options: options)
+        let player = try #require(engine.currentAVPlayer)
+        let item = try #require(player.currentItem)
+        let changes = OSAllocatedUnfairLock(initialState: (total: 0, nilItems: 0))
+        let observation = player.observe(\.currentItem, options: [.new]) { player, _ in
+            changes.withLock {
+                $0.total += 1
+                if player.currentItem == nil { $0.nilItems += 1 }
+            }
+        }
+        defer { observation.invalidate() }
+        engine.prepareForItemReplacement()
+        try await engine.load(url: url, options: options)
+        #expect(engine.currentAVPlayer === player)
+        #expect(player.currentItem != nil && player.currentItem !== item)
+        #expect(changes.withLock { $0.total } == 1)
+        #expect(changes.withLock { $0.nilItems } == 0)
+    }
+
     @Test("handover retires replayed EOF while retaining the actual player item and layer")
     @MainActor
     func handoverRetiresSessionBeforeResubscription() throws {
