@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      verify_handover_baseline:
+        description: Verify the two handover regressions fail against the prior Silo engine pin
+        type: boolean
+        default: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -44,6 +49,27 @@ jobs:
       # it compiling. A harness that stopped building is discovered by the person who needed it.
       - name: build the transport probe (AE#377)
         run: swift build --build-tests --package-path Probes/TransportProbe
+
+      - name: Negative control for episode handover regressions
+        if: ${{ inputs.verify_handover_baseline == true }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          baseline=e238d1d2da52b58bffd7f8135bb2b04e32915cee
+          git fetch --depth 1 origin "$baseline"
+          git restore --source="$baseline" -- \
+            Sources/AetherEngine/AetherEngine.swift \
+            Sources/AetherEngine/Native/NativeAVPlayerHost.swift
+          set +e
+          swift test --filter 'PiPItemHandoverTests/(handoverRetiresSessionBeforeResubscription|queuedEndCannotEscapeHandover)' 2>&1 | tee baseline.log
+          result=${PIPESTATUS[0]}
+          set -e
+          git restore --source=HEAD -- \
+            Sources/AetherEngine/AetherEngine.swift \
+            Sources/AetherEngine/Native/NativeAVPlayerHost.swift
+          test "$result" -ne 0
+          grep -E 'Test .*handover retires replayed EOF.*failed' baseline.log
+          grep -E 'Test .*queued outgoing end notification.*failed' baseline.log
 
   build-tvos:
     name: xcodebuild (tvOS Simulator)

@@ -5176,7 +5176,12 @@ public final class AetherEngine: ObservableObject {
         // AE#158: keepCurrentItem defers the item detach to the next host.load(inPlaceSwap:) so a
         // system PiP window never sees a nil-item gap across a native->native load. Only meaningful
         // together with keepNativeHost; load() computes it via shouldHandOverItemInPlace.
-        if !keepCurrentItem {
+        if keepCurrentItem && keepNativeHost {
+            // Keep the presentation, not the outgoing session's publishers.
+            // loadNative subscribes before host.load; @Published would replay
+            // the old EOF/clock/readiness into the successor otherwise.
+            nativeHost?.prepareForItemHandover()
+        } else {
             nativeHost?.tearDown()
         }
         if !keepNativeHost {
