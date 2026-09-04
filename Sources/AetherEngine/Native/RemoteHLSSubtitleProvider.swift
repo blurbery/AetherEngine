@@ -111,6 +111,7 @@ final class RemoteHLSSubtitleProvider: HLSSegmentProvider, @unchecked Sendable {
         var order: [Key] = []
         var targetsByKey: [Key: [AetherEngine.ExternalSubtitleFillJob.Target]] = [:]
         for (ordinal, track) in tracks.enumerated() where ordinal < stores.count {
+            stores[ordinal].setExternalTimelineOffsetSeconds(track.source.nativeTimelineOffsetSeconds)
             let key = Key(url: track.source.url, headers: track.source.httpHeaders ?? defaultHeaders)
             if targetsByKey[key] == nil { order.append(key) }
             targetsByKey[key, default: []].append(
@@ -148,27 +149,18 @@ final class RemoteHLSSubtitleProvider: HLSSegmentProvider, @unchecked Sendable {
     /// serves a finished master instead. The EXT-X-MEDIA tags were written by `RemoteHLSMasterRewrite`.
     var nativeSubtitleRenditions: [(ordinal: Int, language: String?, name: String, isForced: Bool)] { [] }
 
-    /// Whole-program WebVTT for one sidecar. Cue times are used verbatim: this bypass has no loopback
-    /// producer and therefore no playlist shift, and the origin's VOD timeline starts at zero, so the
-    /// sidecar's own absolute seconds already are the item axis.
-    func nativeSubtitleVTT(ordinal: Int, segmentIndex: Int) -> String? {
-        guard ordinal >= 0, ordinal < stores.count else { return nil }
+    /// Whole-program WebVTT on the origin item's timeline. The host can declare
+    /// an upstream reanchor offset; unfinished stores must not be served because
+    /// AVPlayer caches this response for the rest of the session.
+    func nativeSubtitleVTT(ordinal: Int, segmentIndex: Int) -> NativeSubtitleVTTResponse {
+        guard tracks.indices.contains(ordinal), segmentIndex == 0 else { return .missing }
         let store = stores[ordinal]
         let deadline = Date().addingTimeInterval(vttFillWaitSeconds)
         while !store.isFinished, Date() < deadline {
             usleep(100_000)
         }
+        guard store.isFinished else { return .pending }
         let cues = store.allCues()
-        if !store.isFinished {
-            EngineLog.emit(
-                "[AetherEngine] #316: serving subtitle rendition ord=\(ordinal) before its decode finished "
-                + "(\(cues.count) cue(s)); AVPlayer does not re-fetch a whole-program .vtt",
-                category: .hlsServer)
-        } else {
-            EngineLog.emit(
-                "[AetherEngine] #316: whole-program rendition ord=\(ordinal) cues=\(cues.count)",
-                category: .hlsServer, level: .verbose)
-        }
-        return WebVTTBuilder.body(cues: cues)
+        return .ready(WebVTTBuilder.body(cues: cues))
     }
 }

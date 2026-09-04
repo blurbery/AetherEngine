@@ -10,6 +10,11 @@ the public-API contract.
 
 ## [Unreleased]
 
+### Fixed
+
+- Native subtitle renditions wait for complete extraction instead of caching a partial whole-track response. While extraction is pending, the local server returns a retryable HTTP 503.
+- External subtitles can declare `nativeTimelineOffsetSeconds` for media reanchored upstream. Native HLS/PiP/AirPlay renditions use the adjusted timeline while host overlay cues retain source timestamps.
+
 ### Added
 
 - **`prepareForItemReplacement()`: a host can ask for the AE#158 in-place item handover on a

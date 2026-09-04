@@ -19,7 +19,7 @@ private final class SentinelSealProvider: HLSSegmentProvider, @unchecked Sendabl
     var liveTargetSegmentDuration: Double? { 4.0 }
     var liveTargetDurationFloorSeconds: Double? { 20.0 }
     func liveTargetDurationSeconds(maxSegmentDuration: Double) -> Int { 7 }
-    func nativeSubtitleVTT(ordinal: Int, segmentIndex: Int) -> String? { "WEBVTT\n" }
+    func nativeSubtitleVTT(ordinal: Int, segmentIndex: Int) -> NativeSubtitleVTTResponse { .ready("WEBVTT\n") }
     var nativeSubtitleRenditions: [(ordinal: Int, language: String?, name: String, isForced: Bool)] {
         [(0, "en", "English", false)]
     }

@@ -170,6 +170,30 @@ struct RemoteHLSSubtitleProxyTests {
         #expect(body.contains("00:00:01.000 --> 00:00:03.000"))
     }
 
+    @Test("An unfinished rendition retries and a completed sidecar uses its declared movie offset")
+    func unfinishedRenditionRetriesThenUsesOriginalMovieOffset() async throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("subtitle-offset-\(UUID().uuidString).srt")
+        try "1\n00:10:01,000 --> 00:10:03,000\nAfter reanchor\n\n".write(to: file, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let track = RemoteHLSSubtitleProvider.Track(externalID: 100_000,
+            source: ExternalSubtitleTrack(url: file, nativeTimelineOffsetSeconds: 600))
+        let provider = RemoteHLSSubtitleProvider(tracks: [track], masterBody: Self.master,
+            programDuration: 60, defaultHeaders: [:], vttFillWaitSeconds: 0)
+        let server = HLSLocalServer(provider: provider)
+        try server.start()
+        defer { server.stop(); provider.cancelFill() }
+        let path = "/\(server.pathToken)/subs_0_0.vtt"
+        let pending = try await Self.get(path, port: server.port)
+        #expect(pending.status == 503)
+        #expect(!pending.body.contains("WEBVTT"))
+        provider.startFill()
+        await provider.awaitFill()
+        let ready = try await Self.get(path, port: server.port)
+        #expect(ready.status == 200)
+        #expect(ready.body.contains("00:00:01.000 --> 00:00:03.000"))
+        #expect(ready.body.contains("After reanchor"))
+    }
+
     // MARK: - Rendition metadata
 
     @Test("Renditions are numbered in subs_{ordinal} order and carry the host's own labels")

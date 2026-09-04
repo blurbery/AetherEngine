@@ -35,10 +35,10 @@ private final class WindowedSubsProvider: HLSSegmentProvider, @unchecked Sendabl
     var masterCodecs: String? { "hvc1.1.6.L120.90,mp4a.40.2" }
     var masterVideoRange: HLSVideoRange? { .sdr }
     var nativeSubtitleRenditions: [(ordinal: Int, language: String?, name: String, isForced: Bool)] { [(0, "eng", "English", false)] }
-    func nativeSubtitleVTT(ordinal: Int, segmentIndex: Int) -> String? {
-        guard ordinal == 0, segmentIndex >= 0, segmentIndex < segCount else { return nil }
+    func nativeSubtitleVTT(ordinal: Int, segmentIndex: Int) -> NativeSubtitleVTTResponse {
+        guard ordinal == 0, segmentIndex >= 0, segmentIndex < segCount else { return .missing }
         let start = Double(segmentIndex) * segDuration
-        return WebVTTBuilder.segment(cues: cues[segmentIndex] ?? [], segmentStart: start)
+        return .ready(WebVTTBuilder.segment(cues: cues[segmentIndex] ?? [], segmentStart: start))
     }
 }
 
@@ -74,9 +74,9 @@ struct SubtitleRenditionPlaylistTests {
         let p = WindowedSubsProvider(segCount: 3, cues: [
             1: [(start: 4.5, end: 5.0, text: "first"), (start: 6.0, end: 7.0, text: "second")]
         ])
-        let vtt = p.nativeSubtitleVTT(ordinal: 0, segmentIndex: 1)
-        #expect(vtt != nil)
-        let body = vtt ?? ""
+        guard case .ready(let body) = p.nativeSubtitleVTT(ordinal: 0, segmentIndex: 1) else {
+            Issue.record("Expected a ready subtitle segment"); return
+        }
         #expect(body.hasPrefix("WEBVTT\n"))
         #expect(body.contains("X-TIMESTAMP-MAP=MPEGTS:0,LOCAL:00:00:00.000"))
         #expect(body.contains("00:00:04.500 --> 00:00:05.000\nfirst"))
@@ -86,15 +86,19 @@ struct SubtitleRenditionPlaylistTests {
     @Test("a segment with no cues still yields a valid WEBVTT segment")
     func emptySegmentVTT() {
         let p = WindowedSubsProvider(segCount: 1)
-        let vtt = p.nativeSubtitleVTT(ordinal: 0, segmentIndex: 0)
+        guard case .ready(let vtt) = p.nativeSubtitleVTT(ordinal: 0, segmentIndex: 0) else {
+            Issue.record("Expected a ready empty subtitle segment"); return
+        }
         #expect(vtt == "WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:0,LOCAL:00:00:00.000\n\n")
     }
 
-    @Test("out-of-range segment returns nil")
+    @Test("out-of-range segment returns missing")
     func outOfRangeSegmentVTT() {
         let p = WindowedSubsProvider(segCount: 2)
-        #expect(p.nativeSubtitleVTT(ordinal: 0, segmentIndex: 5) == nil)
-        #expect(p.nativeSubtitleVTT(ordinal: 9, segmentIndex: 0) == nil)
+        guard case .missing = p.nativeSubtitleVTT(ordinal: 0, segmentIndex: 5),
+              case .missing = p.nativeSubtitleVTT(ordinal: 9, segmentIndex: 0) else {
+            Issue.record("Expected missing subtitle segments"); return
+        }
     }
 
     @Test("parseSubsPath extracts ordinal and optional segment index")

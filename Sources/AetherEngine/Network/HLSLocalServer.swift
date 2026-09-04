@@ -3,7 +3,14 @@ import Foundation
 
 // MARK: - Segment Provider Protocol
 
-/// Source of HLS segment bytes for HLSLocalServer. Production implementation synthesizes segments lazily on AVPlayer fetch (2h 4K at 6s/10MB would otherwise require ~120 GB resident).
+/// A complete native subtitle segment, an unfinished extraction, or an invalid path.
+enum NativeSubtitleVTTResponse {
+    case ready(String)
+    case pending
+    case missing
+}
+
+/// Source of HLS segment bytes for HLSLocalServer. Production synthesizes segments lazily on AVPlayer fetch.
 protocol HLSSegmentProvider: AnyObject {
     /// ftyp+moov init segment bytes. Nil until muxer produces one (live-audio bring-up).
     func initSegment() -> Data?
@@ -89,10 +96,10 @@ protocol HLSSegmentProvider: AnyObject {
     /// Serve the SUBTITLES rendition as one whole-program .vtt (single VOD segment) instead of per-video-segment (Sodalite#32).
     var nativeSubtitleWholeProgram: Bool { get }
     /// WebVTT body for one subtitle SEGMENT (#15): cues whose window overlaps video segment `segmentIndex` of
-    /// `ordinal`. nil if either index is out of range. The subtitle media playlist mirrors the video media
+    /// `ordinal`. Returns .missing for an invalid index or .pending for unfinished whole-program extraction. The subtitle media playlist mirrors the video media
     /// playlist one segment per video segment, so the embedded reader (parked ~90s ahead of the playhead)
     /// has the cues for a segment in the store by the time AVPlayer fetches it.
-    func nativeSubtitleVTT(ordinal: Int, segmentIndex: Int) -> String?
+    func nativeSubtitleVTT(ordinal: Int, segmentIndex: Int) -> NativeSubtitleVTTResponse
 
     /// Atomic snapshot at the top of each playlist build. discontinuitySequence = EXT-X-DISCONTINUITY-tagged segments that slid out of the window (RFC 8216 §6.2.2 requires incrementing it; omission slips AVPlayer's discontinuity tracking one window per boundary). firstVisible in the same snapshot: a separate lock acquisition let a concurrent slide produce MEDIA-SEQUENCE newer than the count.
     func notePlaylistBuild() -> (visibleCount: Int, firstVisible: Int, refreshCounter: Int, endlistAdded: Bool, discontinuitySequence: Int)
@@ -157,7 +164,7 @@ extension HLSSegmentProvider {
     var nativeSubtitleRenditions: [(ordinal: Int, language: String?, name: String, isForced: Bool)] { [] }
     var nativeSubtitleDefaultOrdinal: Int { 0 }
     var nativeSubtitleWholeProgram: Bool { false }
-    func nativeSubtitleVTT(ordinal: Int, segmentIndex: Int) -> String? { nil }
+    func nativeSubtitleVTT(ordinal: Int, segmentIndex: Int) -> NativeSubtitleVTTResponse { .missing }
     var liveTargetSegmentDuration: Double? { nil }
     var liveRejoinStart: (segmentIndex: Int, secondsIntoSegment: Double)? { nil }
     func noteServedLiveRejoinPlacement(timeOffset: Double, firstVisible: Int) {}
@@ -818,8 +825,15 @@ final class HLSLocalServer: @unchecked Sendable {
 
         case let p where p.hasPrefix("/subs_") && p.hasSuffix(".vtt"):
             // #15: one WebVTT segment built on demand from the cue store's window for this video segment.
-            guard let parsed = Self.parseSubsPath(p), let seg = parsed.segment,
-                  let vtt = provider?.nativeSubtitleVTT(ordinal: parsed.ordinal, segmentIndex: seg) else {
+            guard let parsed = Self.parseSubsPath(p), let seg = parsed.segment, let provider else {
+                return send404(fd: fd, path: normalizedPath, reason: "invalid subtitle segment")
+            }
+            let vtt: String
+            switch provider.nativeSubtitleVTT(ordinal: parsed.ordinal, segmentIndex: seg) {
+            case .ready(let body): vtt = body
+            case .pending:
+                return send503(fd: fd, path: normalizedPath, reason: "subtitle extraction is not complete")
+            case .missing:
                 return send404(fd: fd, path: normalizedPath, reason: "no subtitle segment for \(normalizedPath)")
             }
             EngineLog.emit("[HLSLocalServer] served subtitle .vtt ord=\(parsed.ordinal) seg=\(seg) bytes=\(vtt.utf8.count)", category: .hlsServer, level: .verbose)

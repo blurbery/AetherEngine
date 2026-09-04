@@ -2076,8 +2076,10 @@ extension AetherEngine {
         for (ordinal, entry) in table.enumerated() {
             // Phase D: OCR entries defer to the selection-time sidecar decode (OCR of a whole
             // .sup at load would violate the selection gating).
-            guard !entry.needsOCR, let extID = entry.externalID,
+            guard let extID = entry.externalID,
                   let track = registry[extID], ordinal < stores.count else { continue }
+            stores[ordinal].setExternalTimelineOffsetSeconds(track.nativeTimelineOffsetSeconds)
+            guard !entry.needsOCR else { continue }
             let key = Key(url: track.url, headers: track.httpHeaders ?? defaultHeaders)
             if targetsByKey[key] == nil { order.append(key) }
             targetsByKey[key, default: []].append(

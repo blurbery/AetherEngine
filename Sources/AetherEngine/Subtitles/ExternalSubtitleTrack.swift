@@ -27,11 +27,16 @@ public struct ExternalSubtitleTrack: Sendable, Equatable {
     /// This indexes the container at `url`, NOT the played media: it is unrelated to the embedded
     /// stream indices that `TrackInfo.id` carries for the main demuxer.
     public var sourceStreamIndex: Int32?
+    /// Original-movie seconds removed from the played media by an upstream
+    /// remux. Native PiP/AirPlay renditions subtract this from external cues;
+    /// host overlay cues keep their original timestamps. Defaults to zero.
+    public var nativeTimelineOffsetSeconds: Double
 
     public init(url: URL, name: String? = nil, language: String? = nil,
                 isForced: Bool = false, isHearingImpaired: Bool = false, isDefault: Bool = false,
                 httpHeaders: [String: String]? = nil, formatHint: String? = nil,
-                sourceStreamIndex: Int32? = nil) {
+                sourceStreamIndex: Int32? = nil, nativeTimelineOffsetSeconds: Double = 0) {
+        self.nativeTimelineOffsetSeconds = nativeTimelineOffsetSeconds.isFinite ? nativeTimelineOffsetSeconds : 0
         self.sourceStreamIndex = sourceStreamIndex
         self.url = url
         self.name = name

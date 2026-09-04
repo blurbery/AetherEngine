@@ -2128,8 +2128,8 @@ final class VideoSegmentProvider: HLSSegmentProvider, @unchecked Sendable {
     /// the AVPlayer timeline. `segments[i].startSeconds` is the absolute output-axis start (correct for both
     /// VOD and the live sliding window, where a cumulative EXTINF sum from firstVisible would not be), so the
     /// window is read straight off the segment plan rather than recomputed.
-    func nativeSubtitleVTT(ordinal: Int, segmentIndex: Int) -> String? {
-        guard ordinal >= 0, ordinal < nativeSubStores.count else { return nil }
+    func nativeSubtitleVTT(ordinal: Int, segmentIndex: Int) -> NativeSubtitleVTTResponse {
+        guard ordinal >= 0, ordinal < nativeSubStores.count else { return .missing }
         let store = nativeSubStores[ordinal]
         if nativeSubtitleWholeProgram {
             // Sodalite#32: serve the ENTIRE program's cues as one .vtt (the only AVPlayer-reliable sideload
@@ -2140,6 +2140,7 @@ final class VideoSegmentProvider: HLSSegmentProvider, @unchecked Sendable {
             while !store.isFinished, Date() < deadline {
                 usleep(100_000)
             }
+            guard store.isFinished else { return .pending }
             // Sodalite#32: the cues are stored at SOURCE pts; AVPlayer clock = source - shift. Apply the CURRENT
             // engine shift (read now, not the possibly-zero load-time value) so cues land on the video's axis.
             let shift = currentShiftSeconds()
@@ -2150,12 +2151,12 @@ final class VideoSegmentProvider: HLSSegmentProvider, @unchecked Sendable {
             // AVKit anchors cues to the fMP4 sample PTS (which diverges from currentTime over our loopback) and
             // the subtitles render offset by the playback position; without it AVKit uses the cue times as the
             // AVPlayer timeline directly (= our absolute cue axis). Sodalite#32.
-            return WebVTTBuilder.body(cues: cues)
+            return .ready(WebVTTBuilder.body(cues: cues))
         }
         stateLock.lock()
         guard segmentIndex >= 0, segmentIndex < segments.count else {
             stateLock.unlock()
-            return nil
+            return .missing
         }
         let start = segments[segmentIndex].startSeconds
         let end = start + segments[segmentIndex].durationSeconds
@@ -2177,7 +2178,7 @@ final class VideoSegmentProvider: HLSSegmentProvider, @unchecked Sendable {
         EngineLog.emit("[HLSVideoEngine] subtitle .vtt ord=\(ordinal) seg=\(segmentIndex) win=[\(String(format: "%.1f", start)),\(String(format: "%.1f", end))) inWin=\(cues.count) readMax=\(String(format: "%.1f", store.readMaxCueEnd()))", category: .hlsServer, level: .verbose)
         // Absolute media-timeline cue times + MPEGTS:0 identity map. Flip to segment-relative here (one line:
         // relativeToStart: true) if on-device PiP shows subtitles shifted by the segment start. See WebVTTBuilder.segment.
-        return WebVTTBuilder.segment(cues: cues, segmentStart: start)
+        return .ready(WebVTTBuilder.segment(cues: cues, segmentStart: start))
     }
 
     /// Sodalite#32 Phase 2: see `stripASSMarkupInVTT`.

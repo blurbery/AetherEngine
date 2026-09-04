@@ -244,10 +244,14 @@ struct SubtitlePumpTapTests {
         #expect(store.readMaxCueEnd() >= 11.0,
                 "pump tap coverage stalled at \(store.readMaxCueEnd())s of ~12s produced")
 
-        let vtt = try #require(prov.nativeSubtitleVTT(ordinal: 0, segmentIndex: 0))
+        guard case .ready(let vtt) = prov.nativeSubtitleVTT(ordinal: 0, segmentIndex: 0) else {
+            Issue.record("Expected a ready subtitle segment"); return
+        }
         #expect(vtt.contains("-->"), "served .vtt window for seg-0 carries no cues")
         #expect(vtt.contains("First cue"))
-        let vttTail = try #require(prov.nativeSubtitleVTT(ordinal: 0, segmentIndex: 2))
+        guard case .ready(let vttTail) = prov.nativeSubtitleVTT(ordinal: 0, segmentIndex: 2) else {
+            Issue.record("Expected a ready subtitle segment"); return
+        }
         #expect(vttTail.contains("Fifth cue"), "tail window missing tap-harvested cues")
 
         // And a producer restart must keep harvesting: re-produce seg-1 and confirm coverage stays.
@@ -292,10 +296,12 @@ struct ASSMarkupStripTests {
             nativeSubtitleStores: [store], nativeSubtitleLanguages: ["eng"],
             stripASSMarkupInVTT: true
         )
-        let vtt = provider.nativeSubtitleVTT(ordinal: 0, segmentIndex: 0)
-        #expect(vtt?.contains("Top line") == true)
-        #expect(vtt?.contains("{\\an8}") != true, "override tags leaked into the .vtt")
-        #expect(vtt?.contains("Default") != true, "ASS header fields leaked into the .vtt")
+        guard case .ready(let vtt) = provider.nativeSubtitleVTT(ordinal: 0, segmentIndex: 0) else {
+            Issue.record("Expected a ready subtitle segment"); return
+        }
+        #expect(vtt.contains("Top line") == true)
+        #expect(vtt.contains("{\\an8}") != true, "override tags leaked into the .vtt")
+        #expect(vtt.contains("Default") != true, "ASS header fields leaked into the .vtt")
     }
 }
 

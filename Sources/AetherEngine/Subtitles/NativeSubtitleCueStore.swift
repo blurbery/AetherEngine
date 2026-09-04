@@ -19,6 +19,7 @@ final class NativeSubtitleCueStore: @unchecked Sendable {
     private let lock = NSLock()
     private var cues: [SubtitleCue] = []
     private var shiftSeconds: Double = 0
+    private var externalTimelineOffsetSeconds: Double = 0
     private var finished = false
     /// Sodalite#32: the pump tap and a side reader can feed the same store concurrently (and a producer
     /// restart re-reads a region), so appends dedup on (start, end, text) instead of trusting the source.
@@ -34,6 +35,12 @@ final class NativeSubtitleCueStore: @unchecked Sendable {
     }
 
     func setShiftSeconds(_ s: Double) { lock.lock(); shiftSeconds = s; lock.unlock() }
+
+    /// Separate from the engine's changing mux shift: external artifacts may
+    /// still use the original movie clock after an upstream reanchor.
+    func setExternalTimelineOffsetSeconds(_ seconds: Double) {
+        lock.lock(); externalTimelineOffsetSeconds = seconds; lock.unlock()
+    }
 
     /// Set once the reader has read the track to EOF, so a whole-program .vtt consumer knows every cue is present (Sodalite#32).
     func markFinished() { lock.lock(); finished = true; lock.unlock() }
@@ -85,7 +92,7 @@ final class NativeSubtitleCueStore: @unchecked Sendable {
     func cuesInWindow(start: Double, end: Double) -> [(start: Double, end: Double, text: String)] {
         lock.lock()
         let snapshot = cues
-        let shift = shiftSeconds
+        let shift = shiftSeconds + externalTimelineOffsetSeconds
         lock.unlock()
         var out: [(start: Double, end: Double, text: String)] = []
         for c in snapshot {
@@ -108,6 +115,6 @@ final class NativeSubtitleCueStore: @unchecked Sendable {
     func readMaxCueEnd() -> Double {
         lock.lock(); defer { lock.unlock() }
         guard !cues.isEmpty else { return 0 }
-        return maxCueEndSeconds - shiftSeconds
+        return maxCueEndSeconds - shiftSeconds - externalTimelineOffsetSeconds
     }
 }

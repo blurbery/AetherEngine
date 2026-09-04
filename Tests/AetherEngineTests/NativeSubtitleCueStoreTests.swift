@@ -15,6 +15,18 @@ final class NativeSubtitleCueStoreTests: XCTestCase {
         return ctx.makeImage()!
     }
 
+    func testExternalTimelineOffsetAffectsRenditionButPreservesOverlayCues() {
+        let store = NativeSubtitleCueStore()
+        store.setExternalTimelineOffsetSeconds(600)
+        store.setShiftSeconds(2)
+        store.appendCues([cue(1, 605, 607, "caption")])
+        XCTAssertEqual(store.allCues().first?.start, 3)
+        XCTAssertEqual(store.readMaxCueEnd(), 5)
+        XCTAssertEqual(store.snapshotCues().first?.startTime, 605)
+        store.setShiftSeconds(3)
+        XCTAssertEqual(store.allCues().first?.start, 2)
+    }
+
     func test_windowReturnsOverlappingCuesOnAVPlayerAxis() {
         let store = NativeSubtitleCueStore()
         store.setShiftSeconds(10)

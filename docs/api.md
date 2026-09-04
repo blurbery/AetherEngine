@@ -475,6 +475,9 @@ Time lives on `player.clock`, a separate `ObservableObject`, so ~10 Hz ticks nev
 | `setNativeSubtitleRendering(_:)` | Hand subtitle drawing to AVKit while the video leaves the host's view hierarchy (PiP, AirPlay, wired external display) and take it back on return. No-op when the active subtitle has no native text equivalent (bitmap, or a track added after load). |
 | `teletextPage`, `setTeletextPage(_:)` | The DVB teletext caption page, at load and while the channel plays. |
 
+When an upstream server reanchors the played media, set `ExternalSubtitleTrack.nativeTimelineOffsetSeconds` to the source-time offset for that item. Native HLS/PiP/AirPlay subtitle renditions subtract it from external cue timestamps; host overlay cues retain their original timestamps. Pass the offset when registering each track, including tracks registered after load. A non-finite offset is treated as zero. Whole-program native renditions return HTTP 503 while extraction remains unfinished, so a temporary timeout cannot make AVPlayer cache an incomplete track for the session.
+
+
 ## Live and DVR
 
 | Symbol | Notes |
@@ -684,7 +687,7 @@ All flags default to safe values; the table is the full set. Depth for the media
 | `SubtitleTextRun` | `text`, `color`, `isBold`, `isItalic`, `isUnderlined`, `isStruckThrough`, `fontName`, `fontSize`, `isStyled`. |
 | `SubtitleTextPlacement` | `alignment` (numpad), `position` (a [0, 1] anchor). |
 | `SubtitleImage` | `cgImage`, `position`, `canvasSize`, `isForced`. |
-| `ExternalSubtitleTrack` | `url`, `name`, `language`, `isForced`, `isHearingImpaired`, `isDefault`, `httpHeaders` (nil forwards `LoadOptions.httpHeaders`), `formatHint` for URLs whose path hides the format, and `sourceStreamIndex` for a container holding several subtitle streams. That index addresses the container at `url`, not the played media. |
+| `ExternalSubtitleTrack` | `url`, `name`, `language`, `isForced`, `isHearingImpaired`, `isDefault`, `httpHeaders` (nil forwards `LoadOptions.httpHeaders`), `formatHint` for URLs whose path hides the format, and `sourceStreamIndex` for a container holding several subtitle streams. That index addresses the container at `url`, not the played media. `nativeTimelineOffsetSeconds` declares source seconds removed upstream from the played media; it defaults to zero and affects native subtitle renditions, not host overlay timestamps. |
 | `NativeSubtitleTrack` | `ordinal`, `language`, `displayName`, plus `sameLanguageRank(of:in:)` for disambiguating same-language options (eng Full against eng SDH). |
 | `TitleInfo` | `id` (0-based, longest first, id 0 is the main feature and the key for `selectTitle`), `name`, `durationSeconds`, `chapterCount`. |
 | `ChapterInfo` | `id`, `name`, `startSeconds`, `durationSeconds`. The two publishers differ in axis: `discChapters` are title-relative and seeked through `selectChapter(id:)`, `mediaChapters` carry content timestamps a host passes straight to `seek(to:)` and `selectChapter` no-ops for them. |
