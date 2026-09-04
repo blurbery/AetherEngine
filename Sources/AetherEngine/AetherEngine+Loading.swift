@@ -489,12 +489,17 @@ extension AetherEngine {
         // generic live HLS origins (IPTV / Stremio add-on channels) enforce per-stream Referer /
         // User-Agent / Authorization headers, so LoadOptions.httpHeaders rides into the AVURLAsset (#119).
         // forwardBufferDuration: 0 = system-adaptive; the 4 s VOD floor caused a 3-4 s black screen on live startup.
+        // AE#158: consume-and-reset, mirroring the loopback callsite, so the bypass honours a PiP or
+        // host-requested handover instead of dropping the item to nil across the swap.
+        let inPlaceHandover = pendingInPlaceItemHandover
+        pendingInPlaceItemHandover = false
         if loadGeneration == bypassGeneration { recordStartupCheckpoint(.sessionConstructed) }   // #361
         host.load(url: playbackURL,
                   startPosition: startPosition,
                   perFrameHDR: true,
                   // AE#154: a VOD resume anchor seeks; nil keeps the live no-initial-seek contract.
                   skipInitialSeek: startPosition == nil,
+                  inPlaceSwap: inPlaceHandover,
                   contract: .init(
                       isLive: options.isLive,
                       // AE#440: the same join tail exists where AVPlayer owns the buffer; the engine only
