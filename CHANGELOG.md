@@ -10,7 +10,19 @@ the public-API contract.
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+
+- **`prepareForItemReplacement()`: a host can ask for the AE#158 in-place item handover on a
+  foreground episode change.** The handover that keeps a PiP window alive across a native->native
+  `load()` was gated on `pictureInPictureActive` alone, so a host that mounts the engine's own
+  `AVPlayerLayer` still took the nil-item gap on every next-episode transition, and on tvOS that gap
+  can leave the layer black while the successor's audio and clock run. The request is one-shot:
+  consumed by the next `load()`, cancelled by `stop()`, ignored when the outgoing backend is not
+  native. When the item is kept, the native host now retires the outgoing session's publishers
+  before the engine subscribes for the successor, so a previous episode's EOF, readiness, rate and
+  clock are not replayed into the new session; the same-content #93 recovery swap is unchanged.
+  Main-actor hops queued by the outgoing item's KVO drop on their session guard instead of writing
+  into the successor. Covered by `PiPItemHandoverTests`.
 
 ## [6.67.2] - 2026-09-03
 

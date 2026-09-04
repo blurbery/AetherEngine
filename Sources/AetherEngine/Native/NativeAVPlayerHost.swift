@@ -589,7 +589,7 @@ final class NativeAVPlayerHost {
             }
 
             Task { @MainActor in
-                guard let self = self else { return }
+                guard let self, self.sessionID == sid else { return }
                 switch item.status {
                 case .readyToPlay:
                     self.duration = item.duration.seconds.isFinite ? item.duration.seconds : 0
@@ -605,6 +605,7 @@ final class NativeAVPlayerHost {
                     }
                     // #168: publish the item's real dynamic range for the probe-free remote-HLS badge.
                     await self.publishDetectedVideoFormat(from: item)
+                    guard self.sessionID == sid else { return }
                     // #168 follow-up: watch for an advertised video rendition that never builds a track
                     // (HEVC-in-MPEG-TS carriage); anchored at readyToPlay so dead origins never arm it.
                     if self.ingestFallbackArmed, self.carriageWatchdogTask == nil {
@@ -623,7 +624,8 @@ final class NativeAVPlayerHost {
             let rate = player.rate
             EngineLog.emit("[NativeAVPlayerHost] #\(sid) rate=\(rate)", category: .engine)
             Task { @MainActor in
-                self?.rate = rate
+                guard let self, self.sessionID == sid else { return }
+                self.rate = rate
             }
         }
 
@@ -650,7 +652,7 @@ final class NativeAVPlayerHost {
             let elapsed = Double(DispatchTime.now().uptimeNanoseconds - (self?.loadStartTime ?? DispatchTime.now()).uptimeNanoseconds) / 1_000_000_000
             EngineLog.emit("[NativeAVPlayerHost] #\(sid) timeControlStatus=\(statusStr) reason=\(reason) t+\(String(format: "%.2f", elapsed))s", category: .engine)
             Task { @MainActor in
-                guard let self = self else { return }
+                guard let self, self.sessionID == sid else { return }
                 // AE#287: swallow the pause AVPlayer takes while a premature-end recovery re-seeks.
                 if status == .paused, self.prematureEndRecoveryInFlight { return }
                 self.timeControlStatus = status
@@ -768,10 +770,11 @@ final class NativeAVPlayerHost {
         ) { [weak self] _ in
             EngineLog.emit("[NativeAVPlayerHost] #\(sid) didPlayToEndTime", category: .engine)
             Task { @MainActor in
-                guard let self else { return }
+                guard let self, self.sessionID == sid else { return }
                 // AE#287: AVPlayer ends a VOD the moment its video renderer runs dry, even with the
                 // audio-only tail still ahead. Recover before `.ended` latches; it is terminal.
                 if await self.recoverFromPrematureEnd() { return }
+                guard self.sessionID == sid else { return }
                 self.didReachEnd = true
             }
         }
@@ -784,7 +787,7 @@ final class NativeAVPlayerHost {
         ) { [weak self] time in
             let value = time.seconds.isFinite ? time.seconds : 0
             Task { @MainActor in
-                guard let self else { return }
+                guard let self, self.sessionID == sid else { return }
                 // renderedTime tracks the parked on-screen frame mid-seek (issue #49).
                 self.renderedTime = value
                 // seekInFlight suppresses currentTime: AVPlayer still reports pre-seek clock until physical landing (issue #37).
@@ -836,6 +839,20 @@ final class NativeAVPlayerHost {
 
     func tearDown() {
         unloadCurrentItem()
+    }
+
+    /// Retire the outgoing session before the engine subscribes for its successor, without
+    /// detaching the item or layer and without bouncing transport. The #93 same-content recovery
+    /// keeps its clock through `load(inPlaceSwap:)`; an episode change must not replay the previous
+    /// episode's EOF, readiness or position into the next session's subscribers.
+    func prepareForItemHandover() {
+        unloadCurrentItem(inPlaceSwap: true)
+        currentTime = 0
+        renderedTime = 0
+        duration = 0
+        rate = 0
+        timeControlStatus = .paused
+        seekableEnd = 0
     }
 
     // MARK: - Failure handling
@@ -1535,7 +1552,11 @@ final class NativeAVPlayerHost {
             + "\(String(format: "%.1f", duration - playhead))s of the presentation lies past the end "
             + "AVPlayer reported, re-seeking in place (attempt \(prematureEndRecoveryAttempts))",
             category: .engine)
+        let sid = sessionID
         await seek(to: playhead)
+        // The session may have been handed over while the seek was in flight; a retired session
+        // must not restart the player under its successor.
+        guard sessionID == sid else { return true }
         avPlayer.play()
         prematureEndRecoveryInFlight = false
         timeControlStatus = avPlayer.timeControlStatus
@@ -1761,6 +1782,10 @@ final class NativeAVPlayerHost {
     }
 
     private func unloadCurrentItem(inPlaceSwap: Bool = false) {
+        // Invalidating KVO does not cancel callbacks already queued onto the main actor. Retire
+        // their session now so they drop on their `sessionID == sid` guard, including during the
+        // handover gap where the old item is still attached and still producing them.
+        sessionID = 0
         if let to = timeObserver {
             avPlayer.removeTimeObserver(to)
             timeObserver = nil
@@ -2136,12 +2161,13 @@ final class NativeAVPlayerHost {
     /// has been replaced; leaves `detectedVideoFormat` nil while no video track resolves (audio-only black).
     @MainActor
     private func publishDetectedVideoFormat(from item: AVPlayerItem) async {
-        guard playerItem === item else { return }
+        let sid = sessionID
+        guard sid != 0, playerItem === item else { return }
         for itemTrack in item.tracks {
             guard let assetTrack = itemTrack.assetTrack, assetTrack.mediaType == .video else { continue }
             guard let cm = try? await assetTrack.load(.formatDescriptions).first else { continue }
             let rate = (try? await assetTrack.load(.nominalFrameRate)).map(Double.init)
-            guard playerItem === item else { return }
+            guard sessionID == sid, playerItem === item else { return }
             let subType = CMFormatDescriptionGetMediaSubType(cm)
             let ext = CMFormatDescriptionGetExtensions(cm) as? [String: Any] ?? [:]
             let transfer = ext[kCMFormatDescriptionExtension_TransferFunction as String] as? String
