@@ -40,11 +40,12 @@ struct BufferAwareSourceRecoveryTests {
     func silentRequestRecovery() async throws {
         let firstRange: Int64 = 2 * 1024 * 1024
         let silentBytes: Int64 = 64 * 1024
-        let server = try #require(ThrottledOriginServer(
+        let origin = ThrottledOriginServer(
             totalSize: 64 * 1024 * 1024,
             respond: { _, offset, _ in
                 offset == firstRange ? .serveThenGoSilent(afterBytes: silentBytes) : .serve206
-            }))
+            })
+        let server = try #require(origin)
         defer { server.stop() }
         let reader = AVIOReader(url: URL(string: "http://127.0.0.1:\(server.port)/movie.bin")!,
                                 boundedInitialFetch: firstRange, connStallTimeout: 20)
