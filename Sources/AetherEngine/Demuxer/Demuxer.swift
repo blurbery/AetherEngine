@@ -1556,7 +1556,7 @@ public final class Demuxer: @unchecked Sendable {
     }
 
     func prewarmIndex(to seconds: Double, timeout: TimeInterval) -> Bool {
-        guard let reader = avioProvider else {
+        guard let reader = avioProvider as? AVIOReader else {
             return seekBounded(to: seconds, timeout: timeout)
         }
         return reader.withRetainedStartupHead {
