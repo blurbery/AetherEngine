@@ -69,8 +69,8 @@ struct PGSStartupProbeTests {
     }
 
     private func withContext(_ body: (UnsafeMutablePointer<AVFormatContext>, UnsafeMutablePointer<AVCodecParameters>, UnsafeMutablePointer<AVCodecParameters>) throws -> Void) throws {
-        var ctx = avformat_alloc_context()
-        defer { avformat_close_input(&ctx) }
+        let ctx = avformat_alloc_context()
+        defer { avformat_free_context(ctx) }
         let c = try #require(ctx)
         c.pointee.iformat = av_find_input_format("matroska")
         let video = try #require(avformat_new_stream(c, nil)?.pointee.codecpar)
