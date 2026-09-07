@@ -1700,7 +1700,8 @@ final class AVIOReader: AVIOProvider, @unchecked Sendable {
             if !windowCanServe, !tailPrefetchInFlight, tailSpan == nil,
                !explicitTailPrefetchAttempted, fileSize > Int64(Self.tailPrefetchBytes),
                isInTailPrefetchRangeLocked(spanPos), !originRequiresSerialRequests,
-               SuffixRangeSupport.shared.denialReason(for: requestURL()) != nil {
+               SuffixRangeSupport.shared.prefersExplicitTailRanges(for: url)
+                || SuffixRangeSupport.shared.denialReason(for: requestURL()) != nil {
                 winCond.unlock()
                 startExplicitTailPrefetchIfNeeded()
                 continue
@@ -2349,6 +2350,7 @@ final class AVIOReader: AVIOProvider, @unchecked Sendable {
     private func startTailPrefetch(explicitSize: Int64? = nil) {
         guard !isLive, !isClosed else { return }
         let url = requestURL()
+        if explicitSize == nil, SuffixRangeSupport.shared.prefersExplicitTailRanges(for: self.url) { return }
         // #377: a speculative second request is the first thing to drop on an origin that allows
         // one at a time. It races the data connection's first byte even on a healthy origin (see
         // above), so on a metered one it is a request spent to lose that race AND to occupy the
@@ -2483,7 +2485,9 @@ final class AVIOReader: AVIOProvider, @unchecked Sendable {
     }
 
     private func startExplicitTailPrefetchIfNeeded() {
-        guard !isLive, SuffixRangeSupport.shared.denialReason(for: requestURL()) != nil else { return }
+        guard !isLive,
+              SuffixRangeSupport.shared.prefersExplicitTailRanges(for: url)
+                || SuffixRangeSupport.shared.denialReason(for: requestURL()) != nil else { return }
         winCond.lock()
         let size = fileSize
         winCond.unlock()
@@ -4212,6 +4216,21 @@ final class SuffixRangeSupport: @unchecked Sendable {
     private let lock = NSLock()
     private var denied: [String: String] = [:]      // origin -> how it declined, for the log line
     private var transportFailures: [String: Int] = [:]
+    private var explicitSources: [URL] = []
+
+    func preferExplicitTailRanges(for url: URL) {
+        guard ["http", "https"].contains(url.scheme?.lowercased() ?? ""), url.host != nil else { return }
+        lock.lock(); defer { lock.unlock() }
+        explicitSources.removeAll { $0 == url }
+        explicitSources.append(url)
+        if explicitSources.count > 64 { explicitSources.removeFirst(explicitSources.count - 64) }
+    }
+
+    func prefersExplicitTailRanges(for url: URL) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return explicitSources.contains(url)
+    }
+
 
     /// Scheme + host + port. Suffix-range support is a property of the server, not of one file.
     static func originKey(for url: URL) -> String? {

@@ -52,6 +52,10 @@ import MediaPlayer
 @MainActor
 public final class AetherEngine: ObservableObject {
 
+    nonisolated public static func preferExplicitTailRanges(for sourceURL: URL) {
+        SuffixRangeSupport.shared.preferExplicitTailRanges(for: sourceURL)
+    }
+
     // MARK: - Public State
 
     @Published public internal(set) var state: PlaybackState = .idle {

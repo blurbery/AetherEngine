@@ -339,6 +339,49 @@ struct Issue281ColdStartRoundTripTests {
         #expect(server.requests.count == 5)
     }
 
+    @Test("a source hint skips the failed suffix request on the first open")
+    func explicitTailHintAvoidsColdSuffixRequest() throws {
+        let total: Int64 = 8 * 1024 * 1024
+        let tailStart = total - Int64(AVIOReader.tailPrefetchBytes)
+        let explicit = "bytes=\(tailStart)-\(total - 1)"
+        let server = try #require(ScriptedOriginServer { request in
+            if request.range == explicit {
+                return .init(status: 206, declaredLength: 65536,
+                             contentRange: "bytes \(tailStart)-\(total - 1)/\(total)", bodyBytes: 65536)
+            }
+            return .init(status: 206, declaredLength: 262144,
+                         contentRange: "bytes 0-262143/\(total)", bodyBytes: 262144)
+        })
+        defer { server.stop() }
+        let url = URL(string: "http://127.0.0.1:\(server.port)/movie.bin")!
+        AetherEngine.preferExplicitTailRanges(for: url)
+        let reader = AVIOReader(url: url)
+        defer { reader.markClosed(); reader.close() }
+        try reader.open()
+        #expect(read(reader, 4096) == 4096)
+        #expect(reader.seek(offset: tailStart + 1024, whence: SEEK_SET) == tailStart + 1024)
+        #expect(read(reader, 4096) == 4096)
+        #expect(server.requests.count == 2)
+        #expect(server.requests.filter { $0.range == explicit }.count == 1)
+        #expect(!server.requests.contains { $0.range?.hasPrefix("bytes=-") == true })
+        #expect(SuffixRangeSupport.shared.denialReason(for: url) == nil)
+    }
+
+    @Test("explicit tail hints are bounded and isolated to the exact source")
+    func explicitTailHintIsolation() {
+        let support = SuffixRangeSupport()
+        let url = URL(string: "https://example.invalid/emby/stream?session=first")!
+        support.preferExplicitTailRanges(for: url)
+        #expect(support.prefersExplicitTailRanges(for: url))
+        #expect(!support.prefersExplicitTailRanges(for: URL(string: "https://example.invalid/silo/stream?session=first")!))
+        #expect(!support.prefersExplicitTailRanges(for: URL(string: "https://example.invalid/emby/stream?session=second")!))
+        for index in 0..<64 {
+            support.preferExplicitTailRanges(for: URL(string: "https://example.invalid/stream/\(index)")!)
+        }
+        #expect(!support.prefersExplicitTailRanges(for: url))
+        #expect(support.prefersExplicitTailRanges(for: URL(string: "https://example.invalid/stream/63")!))
+    }
+
     @Test("startup preparation extends the contiguous head after a reconnect")
     func startupReconnectExtendsHead() async throws {
         let total: Int64 = 16 * 1024 * 1024
