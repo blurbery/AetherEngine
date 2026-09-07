@@ -368,6 +368,17 @@ struct Issue281ColdStartRoundTripTests {
         #expect(reader.seek(offset: 262144, whence: SEEK_SET) == 262144)
         #expect(read(reader, 32768) == 32768)
         #expect(server.requests.count == before)
+
+        reader.withRetainedStartupHead {
+            #expect(reader.seek(offset: 0, whence: SEEK_SET) == 0)
+            #expect(read(reader, AVIOReader.headSpanMaxBytes + 32768) == Int32(AVIOReader.headSpanMaxBytes + 32768))
+            #expect(reader.seek(offset: total / 2, whence: SEEK_SET) == total / 2)
+            #expect(read(reader, 4096) == 4096)
+        }
+        let beforeUncachedRead = server.requests.count
+        #expect(reader.seek(offset: Int64(AVIOReader.headSpanMaxBytes), whence: SEEK_SET) == Int64(AVIOReader.headSpanMaxBytes))
+        #expect(read(reader, 4096) == 4096)
+        #expect(server.requests.count > beforeUncachedRead)
     }
 
     /// Suffix ranges are not universally implemented. An origin that does not do them answers the
