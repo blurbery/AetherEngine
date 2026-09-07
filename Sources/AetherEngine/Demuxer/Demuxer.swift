@@ -23,6 +23,7 @@ enum DemuxerOpenStage: Sendable {
 /// random-access profile (no read-ahead prefetch, small seek chunk) and
 /// a minimal probe budget for fast single-keyframe fetches.
 struct DemuxerOpenProfile: Sendable {
+    var seedPGSCanvas = true
     var probesize: Int64
     var maxAnalyzeDuration: Int64
     var avioPrefetch: Bool
@@ -605,6 +606,34 @@ public final class Demuxer: @unchecked Sendable {
         attachedPictureStreamsReclassified = count
     }
 
+    // Matroska knows the video canvas before probing. PGS carries its actual canvas in
+    // the first PCS, which can be minutes away. Seed the same fallback used by our
+    // subtitle decoder so missing subtitle dimensions do not hold up audio/video
+    // analysis. FFmpeg's PGS decoder replaces this size when the PCS arrives.
+    // Other containers and incomplete video headers retain the normal probe.
+    static func seedMissingPGSCanvas(_ ctx: UnsafeMutablePointer<AVFormatContext>) {
+        guard let name = ctx.pointee.iformat?.pointee.name,
+              String(cString: name).split(separator: ",").contains("matroska") else { return }
+        var canvas: (Int32, Int32)?
+        for i in 0..<Int(ctx.pointee.nb_streams) {
+            guard let stream = ctx.pointee.streams[i], let par = stream.pointee.codecpar,
+                  par.pointee.codec_type == AVMEDIA_TYPE_VIDEO,
+                  !isAttachedPicture(disposition: stream.pointee.disposition),
+                  par.pointee.width > 0, par.pointee.height > 0 else { continue }
+            canvas = (par.pointee.width, par.pointee.height)
+            break
+        }
+        guard let (width, height) = canvas else { return }
+        for i in 0..<Int(ctx.pointee.nb_streams) {
+            guard let par = ctx.pointee.streams[i]?.pointee.codecpar,
+                  par.pointee.codec_type == AVMEDIA_TYPE_SUBTITLE,
+                  par.pointee.codec_id == AV_CODEC_ID_HDMV_PGS_SUBTITLE,
+                  par.pointee.width == 0, par.pointee.height == 0 else { continue }
+            par.pointee.width = width
+            par.pointee.height = height
+        }
+    }
+
     private func probeStreams(_ ctx: UnsafeMutablePointer<AVFormatContext>) throws {
         unresolvableAudioStreams = []
         // #87: the subtitle side demuxer opts out of find_stream_info. avformat_open_input already
@@ -616,6 +645,7 @@ public final class Demuxer: @unchecked Sendable {
             return
         }
         reclassifyAttachedPictures(ctx)
+        if openProfile.seedPGSCanvas { Self.seedMissingPGSCanvas(ctx) }
         let parked = parkUnresolvableAudio(ctx)
         let findRet = avformat_find_stream_info(ctx, nil)
         unparkUnresolvableAudio(ctx, parked)
