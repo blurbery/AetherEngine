@@ -1349,12 +1349,57 @@ extension AetherEngine {
             stores: session.nativeSubtitleCueStoresForSession,
             defaultHeaders: loadedOptions.httpHeaders)
         guard !jobs.isEmpty else { return }
-        externalNativeStoreFillTask = Task.detached(priority: .utility) { [jobs] in
-            for job in jobs {
-                if Task.isCancelled { return }
-                await AetherEngine.runExternalSubtitleFill(job: job)
+        let generation = loadGeneration
+        externalNativeStoreFillTask = Task.detached(priority: .utility) { [weak self, weak session, jobs] in
+            var pending = jobs
+            while !pending.isEmpty {
+                guard !Task.isCancelled else { return }
+                let queuedJobs = pending
+                let decision = await MainActor.run { [weak self, weak session] in
+                    guard let self, let session else { return (current: false, index: Optional<Int>.none) }
+                    return self.externalSubtitleFillDecision(
+                        jobs: queuedJobs, session: session, generation: generation)
+                }
+                guard !Task.isCancelled, decision.current else { return }
+                if let index = decision.index {
+                    await AetherEngine.runExternalSubtitleFill(job: pending.remove(at: index))
+                } else {
+                    do { try await Task.sleep(nanoseconds: 250_000_000) }
+                    catch { return }
+                }
             }
         }
+    }
+
+    func externalSubtitleFillDecision(jobs: [ExternalSubtitleFillJob], session: HLSVideoEngine,
+                                     generation: UInt64) -> (current: Bool, index: Int?) {
+        guard generation == loadGeneration, nativeVideoSession === session else { return (false, nil) }
+        guard prioritizeSelectedExternalSubtitles, !loadedOptions.isLive else {
+            return (true, jobs.isEmpty ? nil : 0)
+        }
+        var priorityIDs = Set([activeSubtitleTrackIndex, activeSecondaryExternalSubtitleTrackID].compactMap { $0 })
+        priorityIDs.formUnion(externalSubtitleRegistry.compactMap { $0.value.isForced ? $0.key : nil })
+        var ordinals = Set(nativeSubtitleTrackTable.indices.filter {
+            nativeSubtitleTrackTable[$0].externalID.map { priorityIDs.contains($0) } ?? false
+        })
+        // AVKit can request the default rendition before the first frame is available.
+        ordinals.insert(nativeSubtitleDefaultOrdinal)
+        if let selected = nativeSubtitleReapplyOrdinal { ordinals.insert(selected) }
+        let stores = session.nativeSubtitleCueStoresForSession
+        let priorityStores = Set(ordinals.filter { stores.indices.contains($0) }.map { ObjectIdentifier(stores[$0]) })
+        let canPrefetch = hasFirstFrameReadyForDisplay && !isSeeking && state == .playing
+            && clock.bufferedPosition - clock.currentTime >= 8
+        return (true, Self.nextExternalSubtitleFillJob(
+            jobs: jobs, priorityStores: priorityStores, canPrefetch: canPrefetch))
+    }
+
+    nonisolated static func nextExternalSubtitleFillJob(
+        jobs: [ExternalSubtitleFillJob], priorityStores: Set<ObjectIdentifier>, canPrefetch: Bool
+    ) -> Int? {
+        if let selected = jobs.firstIndex(where: { job in
+            job.targets.contains { priorityStores.contains(ObjectIdentifier($0.store)) }
+        }) { return selected }
+        return canPrefetch && !jobs.isEmpty ? 0 : nil
     }
 
     /// #266: fill one container's stores from a single decode pass. A pass covering several streams

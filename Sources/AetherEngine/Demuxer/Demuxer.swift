@@ -194,7 +194,15 @@ public final class Demuxer: @unchecked Sendable {
     // concurrent access triggers assertion failures in matroskadec.c.
     private let accessLock = NSLock()
 
-    private var avioProvider: AVIOProvider?
+    private let sourceRecoveryReaderLock = NSLock()
+    private var sourceRecoveryReader: AVIOReader?
+    private var avioProvider: AVIOProvider? {
+        didSet {
+            sourceRecoveryReaderLock.lock()
+            sourceRecoveryReader = avioProvider as? AVIOReader
+            sourceRecoveryReaderLock.unlock()
+        }
+    }
     private var openProfile: DemuxerOpenProfile = .playback
 
     /// #409: rewrites the timestamps of an MP4 whose writer dropped the composition-offset table.
@@ -242,6 +250,13 @@ public final class Demuxer: @unchecked Sendable {
     /// are separate readers against the same origin) in the periodic memprobe.
     var ioWindowDiagnostics: (windowBytes: Int, aheadBytes: Int, parked: Bool)? {
         (avioProvider as? AVIOReader)?.windowDiagnostics
+    }
+
+    func sourceReadHealth(bufferedAhead: Double, allowRecovery: Bool) -> SourceReadHealth? {
+        sourceRecoveryReaderLock.lock()
+        let reader = sourceRecoveryReader
+        sourceRecoveryReaderLock.unlock()
+        return reader?.sourceReadHealth(bufferedAhead: bufferedAhead, allowRecovery: allowRecovery)
     }
 
     /// Forwarded to the playback `AVIOReader` so source stall/reconnect transitions reach the engine (#85).

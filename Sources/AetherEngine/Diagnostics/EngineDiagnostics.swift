@@ -9,4 +9,5 @@ public final class EngineDiagnostics: ObservableObject {
 
     /// 1 Hz snapshot while playing/paused; nil while idle. Cleared in stopInternal so sessions don't inherit stale numbers.
     @Published public internal(set) var liveTelemetry: LiveTelemetry?
+    @Published public internal(set) var sourceReadHealth: SourceReadHealth?
 }

@@ -459,6 +459,18 @@ extension AetherEngine {
     /// Single write-through point: sampler never reaches into `EngineDiagnostics` directly.
     func applyLiveTelemetry(_ snapshot: LiveTelemetry) {
         diagnostics.liveTelemetry = snapshot
+        guard bufferAwareSourceRecoveryEnabled, let session = nativeVideoSession else {
+            diagnostics.sourceReadHealth = nil
+            return
+        }
+        let bufferedAhead = max(clock.bufferedPosition - clock.currentTime,
+                                snapshot.forwardBufferSeconds ?? 0)
+        let allowRecovery = SourceReadRecoveryPolicy.permitsRecovery(
+            playing: state == .playing && playIntentMirror.get(),
+            rendered: hasFirstFrameReadyForDisplay, seeking: isSeeking,
+            live: loadedOptions.isLive, sequential: loadedOptions.sequentialOrigin)
+        diagnostics.sourceReadHealth = session.sourceReadHealth(
+            bufferedAhead: bufferedAhead, allowRecovery: allowRecovery)
     }
 
 

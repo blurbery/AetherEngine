@@ -988,6 +988,9 @@ public final class AetherEngine: ObservableObject {
     /// Observe only in stats overlays.
     public let diagnostics = EngineDiagnostics()
 
+    public var bufferAwareSourceRecoveryEnabled = false
+    public var prioritizeSelectedExternalSubtitles = false
+
     /// Forwarder; for push updates subscribe to `diagnostics.$liveTelemetry` (objectWillChange does NOT fire).
     public var liveTelemetry: LiveTelemetry? { diagnostics.liveTelemetry }
 
@@ -5985,6 +5988,7 @@ public final class AetherEngine: ObservableObject {
         liveTelemetrySampler?.stop()
         liveTelemetrySampler = nil
         diagnostics.liveTelemetry = nil
+        diagnostics.sourceReadHealth = nil
         nativeCancellables.removeAll()
         // AE#158: keepCurrentItem defers the item detach to the next host.load(inPlaceSwap:) so a
         // system PiP window never sees a nil-item gap across a native->native load. Only meaningful

@@ -670,6 +670,40 @@ final class AVIOReader: AVIOProvider, @unchecked Sendable {
     // Bumped on every (re)connect; stale delegate callbacks are ignored.
     private var connGeneration = 0
     private var activeTask: URLSessionDataTask?
+    private var earlyRecoveryTimes: [UInt64] = []
+    private var earlyRecoveryCount = 0
+
+    func sourceReadHealth(bufferedAhead: Double, allowRecovery: Bool,
+                          now: DispatchTime = .now()) -> SourceReadHealth {
+        winCond.lock()
+        let tick = now.uptimeNanoseconds
+        earlyRecoveryTimes.removeAll { tick >= $0 && tick - $0 >= 60_000_000_000 }
+        let gap = tick >= lastDeliveryAt.uptimeNanoseconds
+            ? Double(tick - lastDeliveryAt.uptimeNanoseconds) / 1_000_000_000 : 0
+        let active = activeTask != nil && !connEnded && !isClosed
+        var cancelledTask: URLSessionDataTask?
+        if !isLive, SourceReadRecoveryPolicy.shouldEndRequest(
+            allowed: allowRecovery, bufferedSeconds: bufferedAhead, gapSeconds: gap,
+            requestActive: active, status: connStatus, recentRecoveries: earlyRecoveryTimes.count) {
+            cancelledTask = activeTask
+            activeTask = nil
+            connEnded = true
+            earlyRecoveryTimes.append(tick)
+            earlyRecoveryCount += 1
+            winCond.broadcast()
+        }
+        let health = SourceReadHealth(
+            generation: connGeneration, offset: position,
+            readerAheadBytes: max(0, window.count - max(0, Int(position - winStart))),
+            bufferedAheadSeconds: bufferedAhead, noDataSeconds: active ? gap : 0,
+            hasActiveRequest: active, recoveryCount: earlyRecoveryCount,
+            didRecover: cancelledTask != nil)
+        winCond.unlock()
+        // Use the existing fault/refill path; keep arrived bytes and server backoff intact.
+        cancelledTask?.cancel()
+        Self.releaseBudgetTicket(of: cancelledTask)
+        return health
+    }
 
     /// #174: winCond-guarded snapshots, internal so the task-level backpressure is
     /// unit-tested against a loopback origin without private state access.

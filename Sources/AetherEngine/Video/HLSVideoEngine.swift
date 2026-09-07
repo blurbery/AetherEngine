@@ -2139,6 +2139,10 @@ public final class HLSVideoEngine: @unchecked Sendable {
     var demuxerBytesFetched: Int64 {
         (subsystemSnapshot().demuxer?.avioBytesFetched ?? 0) + retiredTotals().demuxerBytes
     }
+    func sourceReadHealth(bufferedAhead: Double, allowRecovery: Bool) -> SourceReadHealth? {
+        subsystemSnapshot().demuxer?.sourceReadHealth(
+            bufferedAhead: bufferedAhead, allowRecovery: allowRecovery)
+    }
     var segmentCacheTotalBytes: Int { subsystemSnapshot().cache?.totalBytes ?? 0 }
     /// On-disk segment bytes (freshly stat-ed). Used by `aetherctl live --report-cache-bytes`.
     var segmentCacheDiskBytes: Int64 { subsystemSnapshot().cache?.diskBytes() ?? 0 }
