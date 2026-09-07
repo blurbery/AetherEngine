@@ -457,6 +457,8 @@ Time lives on `player.clock`, a separate `ObservableObject`, so ~10 Hz ticks nev
 
 ## Subtitles
 
+`prioritizeSelectedExternalSubtitles` defaults to false. Set it before `load()` to prioritise selected primary/secondary external tracks, forced tracks and the native default rendition when filling VOD subtitle stores. Other files wait until the first frame is available, playback is running without a seek, and at least eight seconds of contiguous media are buffered. Every track remains listed; a new selection takes priority over pending background work. Live playback retains its existing scheduling.
+
 | Symbol | Notes |
 | --- | --- |
 | `$subtitleTracks` | `[TrackInfo]`: embedded text, embedded bitmap, external files and a live channel's HLS renditions in one list. |
@@ -626,6 +628,8 @@ reports an intention rather than an outcome.
 | Symbol | Notes |
 | --- | --- |
 | `diagnostics.liveTelemetry` | 1 Hz `LiveTelemetry?` snapshot while playing or paused, nil while idle. On a separate `ObservableObject` so its ticks cannot re-render a host observing the engine. |
+| `bufferAwareSourceRecoveryEnabled` | False by default. When enabled, an established native VOD session may end an HTTP 200/206 read after five seconds without data if fewer than eight seconds of media are buffered. Requires play intent and a displayed first frame; inactive during pauses, seeks, live playback and sequential-origin playback. Limited to two early recoveries per reader in 60 seconds. The existing read loop resumes at the delivered frontier and retains its retry/backoff policy. Playback rate is unchanged. |
+| `diagnostics.sourceReadHealth` | Optional `SourceReadHealth` snapshot when buffer-aware recovery is enabled for a native reader. Contains request generation, byte offset, unread bytes, buffered seconds, delivery gap and recovery count. `didRecover` identifies the sample that ended a silent request; request activity describes the state before that action. Contains no URLs or credentials. |
 | `EngineLog.handler` | Mirror every info-level line into a host capture path. Fires from whatever thread emitted it, so it must be thread-safe and non-blocking. |
 | `EngineLog.subsystem`, `EngineLog.Category` | `de.superuser404.AetherEngine`, one category per subsystem: `engine`, `ffmpeg`, `session`, `muxer`, `demux`, `hls.server`, `audio.bridge`, `sw.playback`, `scrub`. |
 | `EngineLog.Level` | `.info` reaches os_log and the host handler; `.verbose` is per-segment trace and reaches os_log's debug level **only**, never the handler, which is what keeps a mirrored stream readable. Read the verbose ones with `log stream --level debug`. |
