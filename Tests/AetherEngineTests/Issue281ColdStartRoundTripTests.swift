@@ -259,6 +259,54 @@ struct Issue281ColdStartRoundTripTests {
                 "the head was still retained after the open phase ended")
     }
 
+    @Test("post-probe index prewarm preserves the head, then normal playback releases it")
+    func indexPrewarmPreservesHead() throws {
+        let server = try #require(ThrottledOriginServer(totalSize: fileSize))
+        defer { server.stop() }
+        let reader = makeReader(server)
+        defer { reader.markClosed(); reader.close() }
+        try reader.open()
+        #expect(read(reader, 1024 * 1024) == 1024 * 1024)
+        reader.markOpenPhaseFinished()
+
+        reader.withRetainedStartupHead {
+            #expect(reader.seek(offset: fileSize / 2, whence: SEEK_SET) == fileSize / 2)
+            #expect(read(reader, 64 * 1024) == 64 * 1024)
+        }
+        let requestsAfterPrewarm = server.rangeRequestCount
+        #expect(reader.seek(offset: 8613, whence: SEEK_SET) == 8613)
+        #expect(read(reader, 32 * 1024) == 32 * 1024)
+        #expect(server.rangeRequestCount == requestsAfterPrewarm)
+
+        #expect(reader.seek(offset: fileSize / 2, whence: SEEK_SET) == fileSize / 2)
+        #expect(read(reader, 64 * 1024) == 64 * 1024)
+        let requestsAfterPlayback = server.rangeRequestCount
+        #expect(reader.seek(offset: 8613, whence: SEEK_SET) == 8613)
+        #expect(read(reader, 32 * 1024) == 32 * 1024)
+        #expect(server.rangeRequestCount > requestsAfterPlayback)
+    }
+
+    @Test("failed startup preparation releases its head-retention scope")
+    func failedPrewarmReleasesRetention() throws {
+        enum Failure: Error { case stopped }
+        let server = try #require(ThrottledOriginServer(totalSize: fileSize))
+        defer { server.stop() }
+        let reader = makeReader(server)
+        defer { reader.markClosed(); reader.close() }
+        try reader.open()
+        #expect(read(reader, 1024 * 1024) == 1024 * 1024)
+        reader.markOpenPhaseFinished()
+        #expect(throws: Failure.self) {
+            try reader.withRetainedStartupHead { throw Failure.stopped }
+        }
+        #expect(reader.seek(offset: fileSize / 2, whence: SEEK_SET) == fileSize / 2)
+        #expect(read(reader, 64 * 1024) == 64 * 1024)
+        let requestsAfterSeek = server.rangeRequestCount
+        #expect(reader.seek(offset: 4096, whence: SEEK_SET) == 4096)
+        #expect(read(reader, 32 * 1024) == 32 * 1024)
+        #expect(server.rangeRequestCount > requestsAfterSeek)
+    }
+
     /// Suffix ranges are not universally implemented. An origin that does not do them answers the
     /// speculative request with 200 and the WHOLE file, and a speculative optimisation that
     /// downloads a feature film to discard it is worse than the round trip it saves. The fetch has

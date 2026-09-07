@@ -839,6 +839,7 @@ final class AVIOReader: AVIOProvider, @unchecked Sendable {
     /// where the old window is worthless and parking it would only cost memory.
     /// winCond-guarded.
     private var openPhaseActive = false
+    private var startupHeadRetentionDepth = 0
 
     /// Playback path (known size + prefetch) or live feeds. Live always uses the
     /// persistent reader; the streaming reader has no reconnect machinery.
@@ -1643,7 +1644,7 @@ final class AVIOReader: AVIOProvider, @unchecked Sendable {
             // #281 retest: the head has now done the job it was kept past the parse for. This read
             // is not at the head, so playback has either moved beyond it or started nowhere near it,
             // and holding megabytes for a return that is not coming is just footprint.
-            if !openPhaseActive, !headSpan.isEmpty, spanPos < 0 || spanPos >= Int64(headSpan.count) {
+            if !openPhaseActive, startupHeadRetentionDepth == 0, !headSpan.isEmpty, spanPos < 0 || spanPos >= Int64(headSpan.count) {
                 headSpan = Data()
             }
             if !windowCanServe, !headSpan.isEmpty || tailSpan != nil,
@@ -2494,6 +2495,18 @@ final class AVIOReader: AVIOProvider, @unchecked Sendable {
               start >= 0, end >= start,
               end - start + 1 == Int64(expectedLength) else { return nil }
         return start
+    }
+
+    func withRetainedStartupHead<T>(_ operation: () throws -> T) rethrows -> T {
+        winCond.lock()
+        startupHeadRetentionDepth += 1
+        winCond.unlock()
+        defer {
+            winCond.lock()
+            startupHeadRetentionDepth -= 1
+            winCond.unlock()
+        }
+        return try operation()
     }
 
     /// The demuxer is done parsing; a far seek from here on is playback. Stops COLLECTING into the

@@ -1555,6 +1555,15 @@ public final class Demuxer: @unchecked Sendable {
         return av_find_default_stream_index(ctx)
     }
 
+    func prewarmIndex(to seconds: Double, timeout: TimeInterval) -> Bool {
+        guard let reader = avioProvider else {
+            return seekBounded(to: seconds, timeout: timeout)
+        }
+        return reader.withRetainedStartupHead {
+            seekBounded(to: seconds, timeout: timeout)
+        }
+    }
+
     /// Seek with AVIO read deadline. Returns true if completed; false if aborted.
     /// Needed for VOD cue prewarm: missing/truncated MKV Cues causes matroska to
     /// degrade from "1-2 byte-range reads" into a linear half-file scan on a remote

@@ -1115,7 +1115,7 @@ public final class HLSVideoEngine: @unchecked Sendable {
                 EngineLog.emit("[HLSVideoEngine] cue prewarm: skipped for a segmented source (no index to load, every reposition refetches a segment)")
             } else {
                 let prewarmStart = DispatchTime.now()
-                let prewarmOK = dem.seekBounded(to: durationSeconds * 0.5, timeout: Self.cuePrewarmTimeout)
+                let prewarmOK = dem.prewarmIndex(to: durationSeconds * 0.5, timeout: Self.cuePrewarmTimeout)
                 let prewarmMs = Double(DispatchTime.now().uptimeNanoseconds - prewarmStart.uptimeNanoseconds) / 1_000_000
                 if prewarmOK {
                     EngineLog.emit("[HLSVideoEngine] cue prewarm: seek to \(String(format: "%.1f", durationSeconds * 0.5))s took \(String(format: "%.1f", prewarmMs))ms")
