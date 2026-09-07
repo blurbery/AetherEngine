@@ -647,12 +647,23 @@ private func playSmokeTest(url: URL, seconds: Double, live: Bool, forceSoftware:
         // AE#418: the picture states its own source time, so `axisErr` is what AVPlayer did with the
         // segment rather than what the producer wrote, and `capErr` is the same error as a host
         // placing a cue at `sourceTime` would make it.
+        //
+        // The two errors do not have the same resolution, and only one of them says so without help.
+        // `axisErr` differences two frame-grid values read out of one `copyPixelBuffer` call, so it is
+        // a whole number of frames and every digit of it is a reading. `capErr` differences the same
+        // frame-grid value against the engine's continuous clock, so a magnitude below one frame is
+        // the sub-frame phase of the sampling instant, not an error: two sessions whose `capErr`
+        // differs by less than `capFr = 1.0` made the SAME reading. Round 11 of #418 is exactly that
+        // mistake made on a host-side metric (two clocks sampled at different points, differenced,
+        // and a 0.050 s instrument constant reported as accuracy), so this line prints the quantum
+        // next to the value rather than leaving it to be rediscovered per reader.
         if let picture {
             picture.attachIfNeeded(engine.currentAVPlayerItem)
             if let sample = picture.sample() {
-                line += String(format: " pic=%.3f picItem=%.3f axisErr=%+.3f capErr=%+.3f",
+                let capErr = sample.pictureSourceTime - engine.sourceTime
+                line += String(format: " pic=%.3f picItem=%.3f axisErr=%+.3f capErr=%+.3f capFr=%+.2f",
                                sample.pictureSourceTime, sample.itemTime, sample.axisError,
-                               sample.pictureSourceTime - engine.sourceTime)
+                               capErr, capErr / picture.frameQuantum)
             } else {
                 line += " pic=none"
             }

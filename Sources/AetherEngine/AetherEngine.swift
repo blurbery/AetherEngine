@@ -1473,6 +1473,9 @@ public final class AetherEngine: ObservableObject {
     /// AVPlayer says it holds the bytes that seam describes. One at a time, newest wins, cancelled in
     /// stopInternal: it exists only to check the axis just published, so an older check is stale.
     var placementVerificationTask: Task<Void, Never>?
+    /// AE#481: the sampler reading what the run holding a seek landing carries. One at a time, and the
+    /// newest seek owns it: an older landing describes a position the playhead has left.
+    var landingAxisTask: Task<Void, Never>?
 
     /// 1 Hz live-telemetry sampler. Lifecycle mirrors memoryProbeTask. Holds a weak engine reference
     /// so the retained task can't keep self alive past teardown.
@@ -4577,6 +4580,15 @@ public final class AetherEngine: ObservableObject {
         // still had when the seek was issued; from the landing forward the clock describes the axis
         // it will have instead.
         nativeVideoSession?.snapAxisAfterSeek(landingItemSeconds: clockTarget)
+        // AE#481: and what the landing's run carries is a READING, not the composition it inherits. A
+        // seek that opens a new run at a segment written on its planned position lands on a source-true
+        // stretch, which nothing else in the session ever looks at: measured on the #418 chain with the
+        // re-anchoring seek last, the clock stayed 9 s over the picture from the landing to the end of
+        // the session. Armed here rather than at the landing because the sampler waits for a run to
+        // hold the target anyway, and a superseded seek cancels it.
+        if let session = nativeVideoSession, nativeHost != nil {
+            verifyAxisAtSeekLanding(session: session, landingItemSeconds: clockTarget)
+        }
         // AE#412: inside a keyframe drought, audio opened plan boundaries the keyframe-gated cutter
         // folded, so the landing segment can carry no random-access point at all. AVPlayer reaches
         // back a fixed few seconds on a cold seek and does not look for one, so the picture would
@@ -5941,6 +5953,8 @@ public final class AetherEngine: ObservableObject {
         memoryProbeTask = nil
         placementVerificationTask?.cancel()
         placementVerificationTask = nil
+        landingAxisTask?.cancel()
+        landingAxisTask = nil
         // AE#446: the outage watcher belongs to the session whose window was closed with ENDLIST.
         liveOutageResumeWatcher?.cancel()
         liveOutageResumeWatcher = nil

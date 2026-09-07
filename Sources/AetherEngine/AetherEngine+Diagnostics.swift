@@ -103,6 +103,33 @@ extension AetherEngine {
     static let placementVerificationIntervalMS = 250
     static let placementVerificationSlowIntervalMS = 1000
 
+    /// AE#481: how long after a seek the landing's run is read for. The reading needs a run that
+    /// HOLDS the target, so it has to outlast the landing itself; three seconds covers a landing that
+    /// buffers on a shaped link (measured: the run holding the landing was there within 1.5 s on every
+    /// arm at 600 kbps / 300 ms) without keeping a sampler alive into the next seek.
+    static let landingAxisWaitSeconds = 3.0
+
+    /// AE#481: read what the run holding a seek landing carries, and correct the axis when the timeline
+    /// disagrees with the composition it inherited. Silent in every session whose landing stays inside
+    /// the run it was already playing, which is what a fast link produces.
+    func verifyAxisAtSeekLanding(session: HLSVideoEngine, landingItemSeconds: Double) {
+        landingAxisTask?.cancel()
+        landingAxisTask = Task { @MainActor [weak self, weak session] in
+            var waited = 0.0
+            while waited < Self.landingAxisWaitSeconds {
+                try? await Task.sleep(for: .milliseconds(Self.placementVerificationIntervalMS))
+                waited += Double(Self.placementVerificationIntervalMS) / 1000
+                guard !Task.isCancelled, let self, let session else { return }
+                let ranges = await self.avPlayerLoadedRanges()
+                guard !Task.isCancelled else { return }
+                // A publication is the end of it: the axis it wrote is the one every later reading
+                // composes onto, and sampling on would re-read what this just published.
+                if session.applyLandingAxisReading(
+                    landingItemSeconds: landingItemSeconds, ranges: ranges) { return }
+            }
+        }
+    }
+
     func verifyPlacementAgainstLoadedRanges(session: HLSVideoEngine) {
         placementVerificationTask?.cancel()
         guard session.hasPlacementAwaitingMeasurement else { return }

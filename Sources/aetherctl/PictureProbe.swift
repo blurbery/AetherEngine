@@ -29,6 +29,10 @@ final class PictureProbe: @unchecked Sendable {
     private let blockPitch: Int
     private let blockCenter: Int
     private let frameRate: Double
+
+    /// The smallest difference a picture reading can express. `pictureSourceTime` is a frame index
+    /// divided by the rate, so it moves in these steps and nothing between two of them is a reading.
+    var frameQuantum: Double { 1 / frameRate }
     private var output: AVPlayerItemVideoOutput?
     private var attachedItem: AVPlayerItem?
     private(set) var attachCount = 0

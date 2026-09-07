@@ -98,8 +98,8 @@
 #
 # AE#418 round 9 needs a LONG chain, which is what the reporter's session had and the arms above do
 # not: three placements cannot separate a standing quantity from a one-off reading. Serve the fixture
-# over a throttled origin (Scripts/throttle-origin.py, or any range origin with a delay and a shared
-# rate) and drive twenty-four seeks through the drought:
+# over a throttled origin (Scripts/slowrange.py is that origin: a delay on every response and a
+# rate shared across them) and drive twenty-four seeks through the drought:
 #
 #   aetherctl play --seconds 62 --start-position 53 --picture-probe --seek-every 2 --seek-count 24 \
 #     --seek-pattern 65,60,70,58,75,50,85,45,90,40,95,35,100,30,105,25,110,22,64,59,69,57,74,49 \

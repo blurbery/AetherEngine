@@ -490,6 +490,11 @@ public final class HLSVideoEngine: @unchecked Sendable {
     /// AE#418 round 3: the placement this session last published an axis for, so the prediction can be
     /// checked against where AVPlayer actually put those bytes.
     private var lastPublishedPlacement: PublishedPlacement?
+    /// AE#481: the first segment the local server answered after the most recent seek, which is the one
+    /// whose content opens the run that landing sits in. Identifying it is what makes the landing
+    /// reading a question about ONE segment: asked of the whole plan, "does this run open on a playlist
+    /// position" is a coincidence 31 boundaries wide.
+    private var firstDeliveredIndexSinceSeek: Int?
     /// The last index a fetch declared. A cold fetch reaches the provider BEFORE the producer has
     /// opened its gate, so the placement can precede the offset it is worth; this is what lets the
     /// gate publish for a placement that already happened.
@@ -2749,6 +2754,11 @@ public final class HLSVideoEngine: @unchecked Sendable {
     /// leaves everything below the landing on the axis its bytes were placed with.
     func snapAxisAfterSeek(landingItemSeconds: Double) {
         guard !isLiveSession else { return }
+        // AE#481: the landing reading asks about the segment that opens the run it lands in, so the
+        // record starts empty at every seek. A stale one would describe the run before this seek.
+        anchorShiftLock.lock()
+        firstDeliveredIndexSinceSeek = nil
+        anchorShiftLock.unlock()
         let current = playlistShiftSeconds
         let snapped = Self.axisShiftAfterSeek(current)
         guard snapped != current else { return }
@@ -2765,6 +2775,102 @@ public final class HLSVideoEngine: @unchecked Sendable {
         lastPublishedPlacement = nil
         anchorShiftLock.unlock()
         publishPlaylistShift(snapped, seamItemSeconds: landingItemSeconds)
+    }
+
+    /// AE#481: what the run holding a seek landing carries, read off the playlist instead of inherited
+    /// from a composition measured somewhere else.
+    ///
+    /// The #418 axis is published once, at the advertised start of the segment whose gate re-aimed, and
+    /// it stands for everything after that seam. Measured with `play --picture-probe` on the #418 chain
+    /// with the re-anchoring seek LAST (`--seek-count 5 --seek-pattern 65,60,70,58,75`, `slowrange.py`
+    /// at 600 kbps / 300 ms), the picture says the axis is narrower than that:
+    ///
+    /// | item | 53.000 | 67.833 | 79.000 | 84.917 | ... | 119.958 |
+    /// | --- | --- | --- | --- | --- | --- | --- |
+    /// | `pic - picItem` | **-9.000** | 0.000 | 0.000 | 0.000 | | 0.000 |
+    ///
+    /// The offset belongs to the run `seg13` opened. A seek that opens a NEW run at a segment the
+    /// producer wrote at its planned position lands on a source-true stretch, and nothing tells this
+    /// side: `capErr` reads `+9.017` from the landing to the end of the session (2 of 2 runs at
+    /// 600 kbps / 300 ms, 1 of 1 at 1200 kbps / 200 ms, and not at 3200 kbps / 100 ms, where the
+    /// landing stays inside the run already playing). Ten rounds of #418 never saw it standing because
+    /// a seek burst heals it inside a second: the next seek composes a placement, and its reading comes
+    /// off the changed timeline.
+    ///
+    /// **The discriminator is where the run OPENS, asked of ONE segment.** A segment advertised at A
+    /// goes into a timeline carrying an axis at the seam that axis predicts, and into a timeline
+    /// carrying nothing at A itself, which is round 7's pair of admissible answers. The segment to ask
+    /// is the first one the local server answered after the seek, because that is the one whose content
+    /// opens the run the landing sits in. Asked of the PLAN instead ("does this run open on some
+    /// playlist position"), the same rule publishes on a coincidence: 31 boundaries over 120 s against a
+    /// half-second tolerance, and measured on the #418 chain it wrote a 0.000 axis into a timeline
+    /// carrying -27.875 s, taking `capErr` from +0.092 to -27.883 in one tick. A wrong candidate now
+    /// costs silence rather than an axis: neither answer matches and nothing is published.
+    static func landingAxisReading(
+        landingItemSeconds: Double,
+        ranges: [(Double, Double)],
+        openingSegmentStart: Double,
+        worth: Double,
+        assumedBase: Double,
+        standingAxis: Double
+    ) -> (axis: Double, runStart: Double)? {
+        guard let holding = ranges.first(where: {
+            $0.0.isFinite && $0.1.isFinite && $0.0 <= landingItemSeconds && landingItemSeconds <= $0.1
+        }) else { return nil }
+        let predicted = seamItemSeconds(advertisedStart: openingSegmentStart, currentShift: assumedBase)
+        // Round 7's two admissible answers, asked at a landing instead of at a placement: a run opens
+        // where the timeline this session knows would put this segment, or at the segment's own
+        // playlist position, which is what a timeline carrying nothing there does.
+        //
+        // Both halves are load-bearing. Asking only "does the run open on SOME playlist position"
+        // publishes on a coincidence: the plan has 31 boundaries over 120 s and the tolerance is half a
+        // second, and measured on the #418 chain that read a 0.000 axis into a timeline carrying
+        // -27.875 s (`capErr` +0.092 to -27.883 in one tick). One segment can be asked; the plan cannot.
+        guard abs(holding.0 - predicted) > placementSeamToleranceSeconds,
+              abs(holding.0 - openingSegmentStart) <= placementSeamToleranceSeconds else { return nil }
+        let base = measuredPlacementBase(
+            advertisedStart: openingSegmentStart, observedItemStart: holding.0)
+        let axis = base + worth
+        guard abs(axis - standingAxis) > axisRepublishEpsilonSeconds else { return nil }
+        return (axis, holding.0)
+    }
+
+    /// AE#481: read the axis where a seek landed and publish it when the timeline disagrees with the
+    /// composition it inherited. Returns whether anything was published.
+    func applyLandingAxisReading(landingItemSeconds: Double, ranges: [(Double, Double)]) -> Bool {
+        guard !isLiveSession else { return false }
+        anchorShiftLock.lock()
+        let pending = lastPublishedPlacement
+        let shifts = epochShiftByIndex
+        let displacement = lastPlacementDisplacement
+        let opening = firstDeliveredIndexSinceSeek
+        anchorShiftLock.unlock()
+        // A placement awaiting measurement has the more specific reading (round 7) and measures the
+        // same ranges; two writers on one axis would race, and the placement knows what it composed.
+        guard pending == nil, let opening else { return false }
+        restartLock.lock()
+        let advertisedStart = opening >= 0 && opening < segmentPlan.count
+            ? segmentPlan[opening].startSeconds : nil
+        restartLock.unlock()
+        guard let advertisedStart else { return false }
+        let standing = playlistShiftSeconds
+        guard let reading = Self.landingAxisReading(
+            landingItemSeconds: landingItemSeconds, ranges: ranges,
+            openingSegmentStart: advertisedStart, worth: shifts[opening] ?? 0,
+            assumedBase: Self.placementBase(axis: standing, displacement: displacement),
+            standingAxis: standing)
+        else { return false }
+        EngineLog.emit(
+            "[HLSVideoEngine] #481 the run holding the landing at item "
+            + "\(String(format: "%.3f", landingItemSeconds))s opens at "
+            + "\(String(format: "%.3f", reading.runStart))s, which is seg\(opening)'s own playlist "
+            + "position \(String(format: "%.3f", advertisedStart))s, so it carries "
+            + "\(String(format: "%.3f", reading.axis))s and not the "
+            + "\(String(format: "%.3f", standing))s this session was mapping with",
+            category: .session
+        )
+        publishPlaylistShift(reading.axis, seamItemSeconds: reading.runStart)
+        return true
     }
 
     /// AE#418 round 3: one placement, kept so the composition that was published for it can be checked
@@ -3083,6 +3189,7 @@ public final class HLSVideoEngine: @unchecked Sendable {
             segmentDeliveryByIndex = segmentDeliveryByIndex.filter { abs($0.key - index) <= 64 }
         }
         segmentDeliveryByIndex[index] = (segmentDeliverySerial, delivered)
+        if delivered, firstDeliveredIndexSinceSeek == nil { firstDeliveredIndexSinceSeek = index }
         anchorShiftLock.unlock()
     }
 
