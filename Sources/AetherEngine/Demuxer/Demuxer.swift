@@ -1555,6 +1555,10 @@ public final class Demuxer: @unchecked Sendable {
         return av_find_default_stream_index(ctx)
     }
 
+    func retainStartupHead() -> () -> Void {
+        (avioProvider as? AVIOReader)?.retainStartupHead() ?? {}
+    }
+
     func prewarmIndex(to seconds: Double, timeout: TimeInterval) -> Bool {
         guard let reader = avioProvider as? AVIOReader else {
             return seekBounded(to: seconds, timeout: timeout)

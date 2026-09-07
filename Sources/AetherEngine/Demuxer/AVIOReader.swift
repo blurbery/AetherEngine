@@ -840,6 +840,7 @@ final class AVIOReader: AVIOProvider, @unchecked Sendable {
     /// winCond-guarded.
     private var openPhaseActive = false
     private var startupHeadRetentionDepth = 0
+    private var explicitTailPrefetchAttempted = false
 
     /// Playback path (known size + prefetch) or live feeds. Live always uses the
     /// persistent reader; the streaming reader has no reconnect machinery.
@@ -1696,6 +1697,14 @@ final class AVIOReader: AVIOProvider, @unchecked Sendable {
             // microseconds after the data connection's first byte, so the fetch, which pays the same
             // round trip plus a body, has never landed yet. Waiting is bounded by what a round trip
             // against this origin was measured to cost, so it can never be the more expensive choice.
+            if !windowCanServe, !tailPrefetchInFlight, tailSpan == nil,
+               !explicitTailPrefetchAttempted, fileSize > Int64(Self.tailPrefetchBytes),
+               isInTailPrefetchRangeLocked(spanPos), !originRequiresSerialRequests,
+               SuffixRangeSupport.shared.denialReason(for: requestURL()) != nil {
+                winCond.unlock()
+                startExplicitTailPrefetchIfNeeded()
+                continue
+            }
             if !windowCanServe, tailPrefetchInFlight, isInTailPrefetchRangeLocked(spanPos) {
                 let deadline = tailWaitDeadline ?? Date(
                     timeIntervalSinceNow: max(0, tailPrefetchWaitBudget()
@@ -2337,7 +2346,7 @@ final class AVIOReader: AVIOProvider, @unchecked Sendable {
     /// body, so it is ALWAYS still in flight at that moment on any origin whose first byte costs
     /// anything. It never once served the read it exists for; it only added a request. Only a
     /// loopback origin, which answers before the race can be lost, made it look like it worked.
-    private func startTailPrefetch() {
+    private func startTailPrefetch(explicitSize: Int64? = nil) {
         guard !isLive, !isClosed else { return }
         let url = requestURL()
         // #377: a speculative second request is the first thing to drop on an origin that allows
@@ -2353,14 +2362,28 @@ final class AVIOReader: AVIOProvider, @unchecked Sendable {
         // An origin that already answered this form with something else will answer it that way
         // again. Said out loud rather than skipped silently: "no issued line" and "issued, declined"
         // are different findings, and a reporter reading this log can only report what it prints.
-        if let reason = SuffixRangeSupport.shared.denialReason(for: url) {
+        if explicitSize == nil, let reason = SuffixRangeSupport.shared.denialReason(for: url) {
             EngineLog.emit(
                 "[AVIOReader] \(label) tail prefetch skipped: this origin declined suffix ranges "
                 + "earlier this session (\(reason))", category: .demux)
             return
         }
+        if let explicitSize, explicitSize <= Int64(Self.tailPrefetchBytes) { return }
+        winCond.lock()
+        guard !isFullyClosed, !tailPrefetchInFlight, tailSpan == nil,
+              explicitSize == nil || !explicitTailPrefetchAttempted else {
+            winCond.unlock()
+            return
+        }
+        tailPrefetchInFlight = true
+        tailPrefetchStartedAt = DispatchTime.now()
+        if explicitSize != nil { explicitTailPrefetchAttempted = true }
+        winCond.unlock()
+        let range = explicitSize.map {
+            "bytes=\($0 - Int64(Self.tailPrefetchBytes))-\($0 - 1)"
+        } ?? "bytes=-\(Self.tailPrefetchBytes)"
         var request = URLRequest(url: url)
-        request.setValue("bytes=-\(Self.tailPrefetchBytes)", forHTTPHeaderField: "Range")
+        request.setValue(range, forHTTPHeaderField: "Range")
         request.timeoutInterval = Self.effectiveDetourBudget(chunkRequestTimeout: chunkRequestTimeout)
         applyExtraHeaders(&request)
 
@@ -2376,6 +2399,10 @@ final class AVIOReader: AVIOProvider, @unchecked Sendable {
         // report. It is speculative and nobody waits on it, so it takes a slot only if one is free.
         guard let tailTicket = OriginRequestBudget.shared.tryAcquire(
             for: url, label: "\(label) tail prefetch") else {
+            winCond.lock()
+            tailPrefetchInFlight = false
+            winCond.broadcast()
+            winCond.unlock()
             EngineLog.emit(
                 "[AVIOReader] \(label) tail prefetch skipped: no origin request slot free (#377)",
                 category: .demux)
@@ -2384,7 +2411,8 @@ final class AVIOReader: AVIOProvider, @unchecked Sendable {
 
         let delegate = TailPrefetchDelegate(
             expectedLength: Self.tailPrefetchBytes,
-            extraHeaders: extraHeaders
+            extraHeaders: extraHeaders,
+            expectedTotal: explicitSize
         )
         // #281 retest: one line per open, and the line the field needs. The advertised way to check
         // this fix was "does a bytes=-65536 request show up", which the engine never printed, so a
@@ -2395,6 +2423,18 @@ final class AVIOReader: AVIOProvider, @unchecked Sendable {
             guard let self else { return }
             let elapsedMs = Double(DispatchTime.now().uptimeNanoseconds
                                    - self.tailPrefetchStartedAt.uptimeNanoseconds) / 1_000_000
+            var learned = false
+            if explicitSize == nil, case .rejected(let reason, let verdict) = outcome {
+                switch verdict {
+                case .declinedByOrigin:
+                    SuffixRangeSupport.shared.noteDeclined(url, reason: reason)
+                    learned = true
+                case .transportFailure:
+                    learned = SuffixRangeSupport.shared.noteTransportFailure(url, reason: reason)
+                case .unrelated:
+                    break
+                }
+            }
             self.winCond.lock()
             self.tailPrefetchInFlight = false
             var installed = false
@@ -2405,36 +2445,32 @@ final class AVIOReader: AVIOProvider, @unchecked Sendable {
             self.winCond.broadcast()
             self.winCond.unlock()
             if case .span(let start, let data) = outcome {
-                SuffixRangeSupport.shared.noteServed(url)
+                if explicitSize == nil { SuffixRangeSupport.shared.noteServed(url) }
                 self.addBytesFetched(data.count)
                 EngineLog.emit(
                     "[AVIOReader] \(self.label) tail prefetch \(installed ? "installed" : "dropped") "
                     + "\(data.count)B at \(start) after \(Int(elapsedMs))ms",
                     category: .demux)
-            } else if case .rejected(let reason, let verdict) = outcome {
-                var learned = false
-                switch verdict {
-                case .declinedByOrigin:
-                    SuffixRangeSupport.shared.noteDeclined(url, reason: reason)
-                    learned = true
-                case .transportFailure:
-                    learned = SuffixRangeSupport.shared.noteTransportFailure(url, reason: reason)
-                case .unrelated:
-                    // A 403 during a connection-cap window, a 429, a 5xx: the origin has said
-                    // nothing about suffix ranges, and the very next open may be served. Not a
-                    // transport strike either — two opens inside one short outage would otherwise
-                    // still latch for the rest of the process.
-                    break
-                }
+            } else if case .rejected(let reason, _) = outcome {
                 EngineLog.emit(
                     "[AVIOReader] \(self.label) tail prefetch rejected after \(Int(elapsedMs))ms: \(reason)"
                     + (learned ? "; not asking this origin again this session" : ""),
                     category: .demux)
+                if explicitSize == nil { self.startExplicitTailPrefetchIfNeeded() }
             }
         }
         let task = Self.chunkSession.dataTask(with: request)
         task.delegate = delegate
         winCond.lock()
+        guard !isFullyClosed, !isClosed else {
+            tailPrefetchInFlight = false
+            winCond.broadcast()
+            winCond.unlock()
+            delegate.onOutcome = nil
+            task.cancel()
+            OriginRequestBudget.shared.release(tailTicket)
+            return
+        }
         tailPrefetchTask = task
         tailPrefetchInFlight = true
         tailPrefetchStartedAt = DispatchTime.now()
@@ -2442,8 +2478,17 @@ final class AVIOReader: AVIOProvider, @unchecked Sendable {
         task.resume()
         // Issue AND outcome, because "no outcome line" and "never issued" are different findings and
         // one line cannot carry both. A fetch that hangs to teardown prints this one and no other.
-        EngineLog.emit("[AVIOReader] \(label) tail prefetch issued bytes=-\(Self.tailPrefetchBytes)",
+        EngineLog.emit("[AVIOReader] \(label) tail prefetch issued \(range)",
                        category: .demux)
+    }
+
+    private func startExplicitTailPrefetchIfNeeded() {
+        guard !isLive, SuffixRangeSupport.shared.denialReason(for: requestURL()) != nil else { return }
+        winCond.lock()
+        let size = fileSize
+        winCond.unlock()
+        guard size > Int64(Self.tailPrefetchBytes) else { return }
+        startTailPrefetch(explicitSize: size)
     }
 
     /// Whether `offset` lies in the range the speculative fetch asked for. Caller holds `winCond`.
@@ -2487,25 +2532,31 @@ final class AVIOReader: AVIOProvider, @unchecked Sendable {
         guard let value = http.value(forHTTPHeaderField: "Content-Range") else { return nil }
         let scanner = value.replacingOccurrences(of: "bytes ", with: "")
         let parts = scanner.split(separator: "/", maxSplits: 1)
-        guard let range = parts.first else { return nil }
+        guard parts.count == 2, let total = Int64(parts[1]), total > 0,
+              let range = parts.first else { return nil }
         let bounds = range.split(separator: "-", maxSplits: 1)
         guard bounds.count == 2,
               let start = Int64(bounds[0].trimmingCharacters(in: .whitespaces)),
               let end = Int64(bounds[1].trimmingCharacters(in: .whitespaces)),
-              start >= 0, end >= start,
+              start >= 0, end >= start, end == total - 1,
               end - start + 1 == Int64(expectedLength) else { return nil }
         return start
     }
 
-    func withRetainedStartupHead<T>(_ operation: () throws -> T) rethrows -> T {
+    func retainStartupHead() -> () -> Void {
         winCond.lock()
         startupHeadRetentionDepth += 1
         winCond.unlock()
-        defer {
+        return { [self] in
             winCond.lock()
             startupHeadRetentionDepth -= 1
             winCond.unlock()
         }
+    }
+
+    func withRetainedStartupHead<T>(_ operation: () throws -> T) rethrows -> T {
+        let release = retainStartupHead()
+        defer { release() }
         return try operation()
     }
 
@@ -2855,9 +2906,13 @@ final class AVIOReader: AVIOProvider, @unchecked Sendable {
         // forward, which is why the seek-time park misses on every layout whose parse reads more
         // than `winLookback` before its first excursion. Contiguity is checked rather than assumed:
         // only the connection anchored at zero, and only while it is still the tail of what is held.
-        if openPhaseActive, winStart == 0, base == headSpan.count,
+        let incomingStart = winStart + Int64(base)
+        if openPhaseActive || startupHeadRetentionDepth > 0,
+           incomingStart >= 0, incomingStart <= Int64(headSpan.count),
+           incomingStart + Int64(data.count) > Int64(headSpan.count),
            headSpan.count < Self.headSpanMaxBytes {
-            headSpan.append(data.prefix(Self.headSpanMaxBytes - headSpan.count))
+            let overlap = headSpan.count - Int(incomingStart)
+            headSpan.append(data.dropFirst(overlap).prefix(Self.headSpanMaxBytes - headSpan.count))
         }
         addBytesFetched(count)
         // #220: the requested range has been delivered in full. That ends the connection on
@@ -3003,6 +3058,7 @@ final class AVIOReader: AVIOProvider, @unchecked Sendable {
         }
 
         if isOK {
+            if requestedOffset == 0 { startExplicitTailPrefetchIfNeeded() }
             recordResolvedURL(respondedBy)
             return true
         }
@@ -4240,7 +4296,10 @@ private final class TailPrefetchDelegate: NSObject, URLSessionDataDelegate, @unc
     /// silent failure would be a caller waiting out its whole budget for bytes that are never coming.
     var onOutcome: ((Outcome) -> Void)?
 
-    init(expectedLength: Int, extraHeaders: [String: String]) {
+    private let expectedTotal: Int64?
+
+    init(expectedLength: Int, extraHeaders: [String: String], expectedTotal: Int64? = nil) {
+        self.expectedTotal = expectedTotal
         self.expectedLength = expectedLength
         self.extraHeaders = extraHeaders
     }
@@ -4281,6 +4340,11 @@ private final class TailPrefetchDelegate: NSObject, URLSessionDataDelegate, @unc
             let cr = http.value(forHTTPHeaderField: "Content-Range") ?? "absent"
             rejection = ("Content-Range: \(cr) does not describe the \(expectedLength)B asked for",
                          .declinedByOrigin)
+            completionHandler(.cancel)
+            return
+        }
+        if let expectedTotal, start != expectedTotal - Int64(expectedLength) {
+            rejection = ("tail range differs from the requested file size", .declinedByOrigin)
             completionHandler(.cancel)
             return
         }

@@ -307,6 +307,69 @@ struct Issue281ColdStartRoundTripTests {
         #expect(server.rangeRequestCount > requestsAfterSeek)
     }
 
+    @Test("a wrong suffix response falls back to one explicit tail range")
+    func incorrectSuffixFallsBackToExplicitTail() async throws {
+        let total: Int64 = 8 * 1024 * 1024
+        let tailStart = total - Int64(AVIOReader.tailPrefetchBytes)
+        let explicit = "bytes=\(tailStart)-\(total - 1)"
+        let server = try #require(ScriptedOriginServer { request in
+            if request.range == explicit {
+                return .init(status: 206, declaredLength: 65536,
+                             contentRange: "bytes \(tailStart)-\(total - 1)/\(total)", bodyBytes: 65536)
+            }
+            if request.range?.hasPrefix("bytes=-") == true {
+                return .init(status: 206, declaredLength: 65536,
+                             contentRange: "bytes 0-65535/\(total)", bodyBytes: 65536)
+            }
+            return .init(status: 206, declaredLength: 262144,
+                         contentRange: "bytes 0-262143/\(total)", bodyBytes: 262144)
+        })
+        defer { server.stop() }
+        let url = URL(string: "http://127.0.0.1:\(server.port)/movie.bin")!
+        for _ in 0..<2 {
+            let reader = AVIOReader(url: url)
+            defer { reader.markClosed(); reader.close() }
+            try reader.open()
+            #expect(read(reader, 4096) == 4096)
+            #expect(reader.seek(offset: tailStart + 1024, whence: SEEK_SET) == tailStart + 1024)
+            #expect(read(reader, 4096) == 4096)
+        }
+        #expect(server.requests.filter { $0.range?.hasPrefix("bytes=-") == true }.count == 1)
+        #expect(server.requests.filter { $0.range == explicit }.count == 2)
+        #expect(server.requests.count == 5)
+    }
+
+    @Test("startup preparation extends the contiguous head after a reconnect")
+    func startupReconnectExtendsHead() async throws {
+        let total: Int64 = 16 * 1024 * 1024
+        let server = try #require(ScriptedOriginServer { request in
+            let raw = (request.range ?? "bytes=0-").replacingOccurrences(of: "bytes=", with: "")
+            let parts = raw.split(separator: "-", omittingEmptySubsequences: false)
+            let start = parts[0].isEmpty ? total - 65536 : Int64(parts[0]) ?? 0
+            let end = min(total - 1, start + (parts[0].isEmpty ? 65536 : 262144) - 1)
+            return .init(status: 206, declaredLength: end - start + 1,
+                         contentRange: "bytes \(start)-\(end)/\(total)", bodyBytes: Int(end - start + 1))
+        })
+        defer { server.stop() }
+        let reader = AVIOReader(url: URL(string: "http://127.0.0.1:\(server.port)/movie.bin")!)
+        defer { reader.markClosed(); reader.close() }
+        try reader.open()
+        #expect(read(reader, 262144) == 262144)
+        reader.markOpenPhaseFinished()
+        reader.withRetainedStartupHead {
+            #expect(reader.seek(offset: total / 2, whence: SEEK_SET) == total / 2)
+            #expect(read(reader, 4096) == 4096)
+            #expect(reader.seek(offset: 262144, whence: SEEK_SET) == 262144)
+            #expect(read(reader, 32768) == 32768)
+            #expect(reader.seek(offset: total / 2, whence: SEEK_SET) == total / 2)
+            #expect(read(reader, 4096) == 4096)
+        }
+        let before = server.requests.count
+        #expect(reader.seek(offset: 262144, whence: SEEK_SET) == 262144)
+        #expect(read(reader, 32768) == 32768)
+        #expect(server.requests.count == before)
+    }
+
     /// Suffix ranges are not universally implemented. An origin that does not do them answers the
     /// speculative request with 200 and the WHOLE file, and a speculative optimisation that
     /// downloads a feature film to discard it is worse than the round trip it saves. The fetch has
@@ -441,6 +504,9 @@ struct Issue281ColdStartRoundTripTests {
         #expect(AVIOReader.suffixRangeStart(response("bytes 900-999/1000", length: 64),
                                             expectedLength: 64) == nil)
         #expect(AVIOReader.suffixRangeStart(response(nil, length: 100), expectedLength: 100) == nil)
+        #expect(AVIOReader.suffixRangeStart(response("bytes 0-99/1000", length: 100), expectedLength: 100) == nil)
+        #expect(AVIOReader.suffixRangeStart(response("bytes 900-999/*", length: 100), expectedLength: 100) == nil)
+        #expect(AVIOReader.suffixRangeStart(response("bytes 900-999/999", length: 100), expectedLength: 100) == nil)
         #expect(AVIOReader.suffixRangeStart(response("bytes */1000", length: 100),
                                             expectedLength: 100) == nil)
     }

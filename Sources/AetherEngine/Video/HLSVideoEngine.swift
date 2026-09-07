@@ -1033,6 +1033,8 @@ public final class HLSVideoEngine: @unchecked Sendable {
             }
         }
         demuxer = dem
+        let releaseStartupHead = dem.retainStartupHead()
+        defer { releaseStartupHead() }
         dem.onNetworkPhaseChanged = onNetworkPhaseChanged   // surface source stall/reconnect to playbackPhase (#85)
 
         let videoIndex = dem.videoStreamIndex
